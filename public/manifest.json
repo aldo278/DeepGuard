@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "TrustShield - Real-Time Deepfake & Misinformation Detection",
+  "version": "1.0.0",
+  "description": "Protect yourself from AI-generated deception with real-time deepfake detection and misinformation fact-checking during video calls, browsing, and video watching.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://zoom.us/*",
+    "https://teams.microsoft.com/*",
+    "https://www.youtube.com/*",
+    "https://openrouter.ai/api/*",
+    "https://claimbuster.api.app/*",
+    "https://factchecktools.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "https://zoom.us/*",
+        "https://teams.microsoft.com/*",
+        "https://www.youtube.com/*",
+        "<all_urls>"
+      ],
+      "js": ["src/content/index.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "src/panel/main.html"
+  },
+  "action": {
+    "default_title": "Open TrustShield",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["models/*.onnx", "src/worker/*.ts"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
+}

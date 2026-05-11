@@ -23,14 +23,8 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://meet.google.com/*",
-        "https://zoom.us/*",
-        "https://teams.microsoft.com/*",
-        "https://www.youtube.com/*",
-        "<all_urls>"
-      ],
-      "js": ["src/content/index.ts"],
+      "matches": ["<all_urls>"],
+      "js": ["src/content/factcheck.ts"],
       "run_at": "document_idle"
     }
   ],

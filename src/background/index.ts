@@ -54,7 +54,6 @@ class TrustShieldServiceWorker {
   // Get default settings
   private getDefaultSettings(): TrustShieldSettings {
     return {
-      openRouterApiKey: '',
       enableDeepGuard: true,
       enableMisinfoShield: true,
       
@@ -128,6 +127,7 @@ class TrustShieldServiceWorker {
     this.messageHandlers.set('ERROR', this.handleError.bind(this));
     this.messageHandlers.set('SETTINGS_UPDATE', this.handleSettingsUpdate.bind(this));
     this.messageHandlers.set('PRIVACY_CONSENT_RESPONSE', this.handlePrivacyConsentResponse.bind(this));
+    this.messageHandlers.set('GET_API_KEY', this.handleGetApiKey.bind(this));
   }
 
   // Set up event listeners
@@ -163,22 +163,24 @@ class TrustShieldServiceWorker {
   }
 
   // Handle messages from content scripts and side panel
-  private async handleMessage(
+  private handleMessage(
     message: ExtensionMessage,
     sender: any,
     sendResponse: Function
-  ): Promise<void> {
+  ): boolean {
     const handler = this.messageHandlers.get(message.type);
     
     if (handler) {
-      try {
-        await handler(message.payload, sender, sendResponse);
-      } catch (error) {
+      // Handle async - must return true to keep sendResponse valid
+      handler(message.payload, sender, sendResponse).catch((error: any) => {
         console.error(`Error handling message type ${message.type}:`, error);
         this.logError('MESSAGE_HANDLER_ERROR', `Failed to handle ${message.type}`, error);
-      }
+        sendResponse({ error: error.message });
+      });
+      return true; // Keep channel open for async response
     } else {
       console.warn('Unknown message type:', message.type);
+      return false;
     }
   }
 
@@ -335,6 +337,12 @@ class TrustShieldServiceWorker {
     }
     
     sendResponse({ success: true });
+  }
+
+  private async handleGetApiKey(payload: any, sender: any, sendResponse: Function): Promise<void> {
+    // Return the API key from environment (embedded at build time)
+    const apiKey = (import.meta as any).env?.VITE_OPENROUTER_API_KEY || '';
+    sendResponse({ apiKey });
   }
 
   // Utility methods

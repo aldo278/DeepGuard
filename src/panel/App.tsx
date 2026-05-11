@@ -46,13 +46,14 @@ const App: React.FC = () => {
   });
 
   const [activeTab, setActiveTab] = useState('video');
+  const [retryCount, setRetryCount] = useState(0);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // Get default settings
   function getDefaultSettings(): TrustShieldSettings {
     return {
-      openRouterApiKey: '',
-      enableDeepGuard: true,
-      enableMisinfoShield: true,
+      enableDeepGuard: false,
+      enableMisinfoShield: false,
       
       deepguard: {
         fps: TRUSTSHIELD_CONFIG.MODELS.DEEPFAKE.FRAME_RATE,
@@ -90,17 +91,34 @@ const App: React.FC = () => {
 
   // Initialize component
   useEffect(() => {
-    initializePanel();
-    setupMessageListeners();
+    // Wait for Chrome APIs to be ready
+    const initializeWhenReady = () => {
+      if (chrome?.runtime && chrome?.storage?.sync && chrome?.tabs) {
+        initializePanel();
+        setupMessageListeners();
+      } else {
+        console.log('Chrome APIs not ready, waiting...');
+        setTimeout(initializeWhenReady, 500);
+      }
+    };
+
+    initializeWhenReady();
     
     return () => {
       // Cleanup listeners
-      chrome.runtime.onMessage.removeListener(messageListener);
+      if (chrome?.runtime?.onMessage) {
+        chrome.runtime.onMessage.removeListener(messageListener);
+      }
     };
   }, []);
 
   // Initialize panel
   const initializePanel = async () => {
+    if (isInitialized) {
+      console.log('Panel already initialized, skipping...');
+      return;
+    }
+
     try {
       // Load settings
       const result = await chrome.storage.sync.get(TRUSTSHIELD_CONFIG.STORAGE.SETTINGS);
@@ -117,6 +135,7 @@ const App: React.FC = () => {
         detectPageType(tab.url);
       }
 
+      setIsInitialized(true);
       setState(prev => ({ ...prev, isLoading: false }));
       
     } catch (error) {
@@ -173,6 +192,12 @@ const App: React.FC = () => {
           isDeepGuardActive: message.payload.pageType === 'live-call' && prev.settings.enableDeepGuard,
           isMisinfoShieldActive: prev.settings.enableMisinfoShield,
         }));
+        break;
+
+      case 'PAGE_UPDATED':
+        if (message.payload.url) {
+          detectPageType(message.payload.url);
+        }
         break;
 
       case 'SETTINGS_UPDATE':
@@ -277,16 +302,28 @@ const App: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-destructive">
               <AlertCircle className="w-5 h-5" />
-              Error
+              Extension Error
             </CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-muted-foreground mb-4">
-              TrustShield encountered an error. Please try refreshing the page.
+              TrustShield encountered an error. This usually happens when Chrome APIs are not yet available.
             </p>
-            <Button onClick={() => window.location.reload()} className="w-full">
-              Refresh
-            </Button>
+            <div className="space-y-2">
+              <Button onClick={() => {
+                setRetryCount(0);
+                setState(prev => ({ ...prev, hasErrors: false, isLoading: true }));
+                initializePanel();
+              }} className="w-full">
+                Retry Initialization
+              </Button>
+              <Button onClick={() => window.location.reload()} variant="outline" className="w-full">
+                Reload Extension
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-4">
+              If this persists, try reloading the extension in chrome://extensions/
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -443,8 +480,20 @@ const App: React.FC = () => {
           <TabsContent value="settings" className="mt-0 h-full">
             <SettingsTab 
               settings={state.settings}
-              onSettingsUpdate={(newSettings) => {
+              onSettingsUpdate={async (newSettings) => {
                 setState(prev => ({ ...prev, settings: newSettings }));
+                
+                // Save directly to Chrome storage as backup
+                try {
+                  await chrome.storage.sync.set({
+                    [TRUSTSHIELD_CONFIG.STORAGE.SETTINGS]: newSettings
+                  });
+                  console.log('Settings saved to Chrome storage:', newSettings.openRouterApiKey ? 'API key set' : 'No API key');
+                } catch (error) {
+                  console.error('Failed to save settings:', error);
+                }
+                
+                // Also notify background script
                 chrome.runtime.sendMessage({
                   type: 'SETTINGS_UPDATE',
                   payload: newSettings

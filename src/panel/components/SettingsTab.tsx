@@ -5,9 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { Settings, Shield, Eye, FileText, Lock, Info, Key, Save } from 'lucide-react';
+import { Settings, Shield, Eye, FileText, Lock, Info, Key, Save, CheckCircle, XCircle } from 'lucide-react';
 import { TrustShieldSettings } from '@/types';
-import { validateApiKey } from '@/lib/utils';
+import { getApiKeyStatus, hasOpenRouterKey, hasClaimBusterKey, hasGoogleFactCheckKey } from '@/lib/env';
 
 interface SettingsTabProps {
   settings: TrustShieldSettings;
@@ -16,10 +16,11 @@ interface SettingsTabProps {
 
 const SettingsTab: React.FC<SettingsTabProps> = ({ settings, onSettingsUpdate }) => {
   const [localSettings, setLocalSettings] = useState<TrustShieldSettings>(settings);
-  const [apiKeyInput, setApiKeyInput] = useState(settings.openRouterApiKey || '');
-  const [showApiKey, setShowApiKey] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  
+  // Get API key status from environment
+  const apiStatus = getApiKeyStatus();
 
   const updateSetting = <K extends keyof TrustShieldSettings>(
     section: K,
@@ -50,20 +51,7 @@ const SettingsTab: React.FC<SettingsTabProps> = ({ settings, onSettingsUpdate })
     setSaveMessage('');
 
     try {
-      // Validate API key if provided
-      if (apiKeyInput && !validateApiKey(apiKeyInput)) {
-        setSaveMessage('Invalid API key format');
-        setIsSaving(false);
-        return;
-      }
-
-      // Update settings with API key
-      const updatedSettings = {
-        ...localSettings,
-        openRouterApiKey: apiKeyInput
-      };
-
-      onSettingsUpdate(updatedSettings);
+      onSettingsUpdate(localSettings);
       setSaveMessage('Settings saved successfully');
       
       setTimeout(() => setSaveMessage(''), 3000);
@@ -125,14 +113,13 @@ const SettingsTab: React.FC<SettingsTabProps> = ({ settings, onSettingsUpdate })
       };
 
       setLocalSettings(defaultSettings);
-      setApiKeyInput('');
     }
   };
 
   return (
     <div className="p-4 h-full overflow-y-auto custom-scrollbar">
       <div className="space-y-4">
-        {/* API Configuration */}
+        {/* API Configuration Status */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -140,53 +127,54 @@ const SettingsTab: React.FC<SettingsTabProps> = ({ settings, onSettingsUpdate })
               API Configuration
             </CardTitle>
             <CardDescription>
-              Configure API keys for enhanced detection capabilities
+              API keys are configured via .env file in the project root
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <label className="text-sm font-medium mb-2 block">
-                OpenRouter API Key
-              </label>
+          <CardContent className="space-y-3">
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <input
-                  type={showApiKey ? 'text' : 'password'}
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="sk-or-v1-..."
-                  className="flex-1 text-sm border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowApiKey(!showApiKey)}
-                >
-                  {showApiKey ? 'Hide' : 'Show'}
-                </Button>
+                <span className="text-sm font-medium">OpenRouter API</span>
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                Required for LLM-powered deepfake arbitration and claim analysis
-              </p>
+              <div className="flex items-center gap-2">
+                {hasOpenRouterKey() ? (
+                  <><CheckCircle className="w-4 h-4 text-green-500" /><Badge variant="default">Configured</Badge></>
+                ) : (
+                  <><XCircle className="w-4 h-4 text-red-500" /><Badge variant="destructive">Not Set</Badge></>
+                )}
+              </div>
             </div>
-
-            {apiKeyInput && (
+            
+            <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Badge variant={validateApiKey(apiKeyInput) ? 'default' : 'destructive'}>
-                  {validateApiKey(apiKeyInput) ? 'Valid Format' : 'Invalid Format'}
-                </Badge>
-                <span className="text-xs text-muted-foreground">
-                  Get your API key from{' '}
-                  <a 
-                    href="https://openrouter.ai" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    OpenRouter
-                  </a>
-                </span>
+                <span className="text-sm font-medium">ClaimBuster API</span>
               </div>
-            )}
+              <div className="flex items-center gap-2">
+                {hasClaimBusterKey() ? (
+                  <><CheckCircle className="w-4 h-4 text-green-500" /><Badge variant="default">Configured</Badge></>
+                ) : (
+                  <><XCircle className="w-4 h-4 text-muted-foreground" /><Badge variant="secondary">Optional</Badge></>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Google Fact Check API</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {hasGoogleFactCheckKey() ? (
+                  <><CheckCircle className="w-4 h-4 text-green-500" /><Badge variant="default">Configured</Badge></>
+                ) : (
+                  <><XCircle className="w-4 h-4 text-muted-foreground" /><Badge variant="secondary">Optional</Badge></>
+                )}
+              </div>
+            </div>
+            
+            <p className="text-xs text-muted-foreground mt-2 pt-2 border-t">
+              To configure API keys, add them to your <code className="bg-muted px-1 rounded">.env</code> file:
+              <br />
+              <code className="text-xs bg-muted px-1 rounded">VITE_OPENROUTER_API_KEY=sk-or-v1-...</code>
+            </p>
           </CardContent>
         </Card>
 

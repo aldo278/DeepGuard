@@ -227,7 +227,7 @@ const App: React.FC = () => {
     setState(prev => ({
       ...prev,
       settings: newSettings,
-      isDeepGuardActive: enabled && state.currentPageType === 'live-call'
+      isDeepGuardActive: enabled
     }));
 
     // Update settings in background
@@ -235,6 +235,18 @@ const App: React.FC = () => {
       type: 'SETTINGS_UPDATE',
       payload: { enableDeepGuard: enabled }
     });
+
+    // Send message to content script to start/stop deepfake detection
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) {
+        chrome.tabs.sendMessage(tab.id, {
+          type: enabled ? 'START_DEEPFAKE_SCAN' : 'STOP_DEEPFAKE_SCAN'
+        });
+      }
+    } catch (e) {
+      console.log('Could not send message to content script');
+    }
   };
 
   const toggleMisinfoShield = async (enabled: boolean) => {
@@ -397,7 +409,6 @@ const App: React.FC = () => {
               <Switch
                 checked={state.isDeepGuardActive}
                 onCheckedChange={toggleDeepGuard}
-                disabled={state.currentPageType !== 'live-call'}
               />
             </div>
             <div className="flex items-center gap-2">

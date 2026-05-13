@@ -26,6 +26,16 @@
       "matches": ["<all_urls>"],
       "js": ["src/content/factcheck.ts"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://meet.google.com/*",
+        "https://zoom.us/*",
+        "https://teams.microsoft.com/*"
+      ],
+      "js": ["src/content/deepfake-detector.ts"],
+      "run_at": "document_idle"
     }
   ],
   "side_panel": {

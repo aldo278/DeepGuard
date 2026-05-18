@@ -75,3 +75,6 @@ extension-key.pem
 # Vitest
 vitest.config.ts.timestamp-*
 
+# Vite temp files
+vite.config.ts.timestamp-*
+

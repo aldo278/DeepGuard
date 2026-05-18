@@ -514,18 +514,67 @@ class FactChecker {
   }
 
   private async getAvailableModel(apiKey: string): Promise<string> {
-    // List of models to try in order of preference
-    const models = [
-      'anthropic/claude-3-haiku',
-      'google/gemini-flash-1.5',
-      'openai/gpt-4o-mini',
-      'meta-llama/llama-3.2-3b-instruct',
-      'microsoft/wizardlm-2-8x22b',
-      'qwen/qwen-2.5-7b-instruct'
+    // First, fetch the list of available free models from OpenRouter
+    try {
+      const modelsResponse = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': window.location.origin
+        }
+      });
+      
+      if (modelsResponse.ok) {
+        const modelsData = await modelsResponse.json();
+        // Find free models (pricing.prompt === "0" or has :free suffix)
+        const freeModels = modelsData.data?.filter((m: any) => 
+          m.id?.includes(':free') || 
+          (m.pricing?.prompt === '0' && m.pricing?.completion === '0')
+        ) || [];
+        
+        console.log('Available free models:', freeModels.map((m: any) => m.id));
+        
+        // Try each free model
+        for (const model of freeModels) {
+          try {
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+                'HTTP-Referer': window.location.origin,
+                'X-Title': 'TrustShield Fact Check'
+              },
+              body: JSON.stringify({
+                model: model.id,
+                messages: [{ role: 'user', content: 'test' }],
+                max_tokens: 1
+              })
+            });
+
+            if (response.ok) {
+              console.log(`Fact check using model: ${model.id}`);
+              return model.id;
+            }
+          } catch (e) {
+            console.log(`Model ${model.id} failed, trying next...`);
+          }
+        }
+      }
+    } catch (e) {
+      console.log('Failed to fetch models list:', e);
+    }
+
+    // Fallback: Try hardcoded models that are typically free
+    const fallbackModels = [
+      'nousresearch/nous-capybara-7b:free',
+      'mistralai/mistral-7b-instruct:free',
+      'huggingfaceh4/zephyr-7b-beta:free',
+      'openchat/openchat-7b:free',
+      'gryphe/mythomist-7b:free',
+      'undi95/toppy-m-7b:free'
     ];
 
-    // Try each model until one works
-    for (const model of models) {
+    for (const model of fallbackModels) {
       try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -533,28 +582,28 @@ class FactChecker {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`,
             'HTTP-Referer': window.location.origin,
-            'X-Title': 'TrustShield Model Check'
+            'X-Title': 'TrustShield Fact Check'
           },
           body: JSON.stringify({
             model: model,
-            messages: [
-              { role: 'user', content: 'test' }
-            ],
-            max_tokens: 1,
-            temperature: 0.1
+            messages: [{ role: 'user', content: 'test' }],
+            max_tokens: 1
           })
         });
 
         if (response.ok) {
-          console.log(`Fact check using model: ${model}`);
+          console.log(`Fact check using fallback model: ${model}`);
           return model;
+        } else {
+          const errorData = await response.json().catch(() => ({}));
+          console.log(`Model ${model} error:`, errorData.error?.message || response.status);
         }
       } catch (e) {
-        console.log(`Model ${model} not available, trying next...`);
+        console.log(`Model ${model} not available`);
       }
     }
 
-    throw new Error('No available models found');
+    throw new Error('No available free models found. Your API key may not have access to free models.');
   }
 
   private async callFactCheckAPI(text: string): Promise<FactCheckResult> {

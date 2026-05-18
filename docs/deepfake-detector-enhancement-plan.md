@@ -36,32 +36,42 @@ Frame → CNN → Prediction
 
 ---
 
-# Step 2 — Add Proper Face Detection + Alignment
+# Step 2 — Add Proper Representation Learning
 
-## Critical Issues with Current Approach
-- Model learns **head pose, lighting, camera angle** instead of fake artifacts
-- Inconsistent face sizes/positions confuse the model
-- Background interference affects predictions
+## Current Issues Identified
+- Heuristic-based analysis is not discriminative
+- LSTM model is untrained (outputs ~0.5, contributes nothing)
+- Thresholds are arbitrary (avg > 0.25) and not statistically grounded
+- No validation set, ROC curve, or proper calibration
+- Missing negative hard examples (compression, low quality, etc.)
+- Current approach: forensic heuristics → Should be: representation learning
 
-## Implementation Pipeline
-```text
-Video Frame → Face Detection → Landmark Detection → Face Alignment → Crop → Normalize
-```
+## NEW PIPELINE (Representation Learning Approach)
 
-### Face Detection Options
-- **MediaPipe Face Detection** (recommended) - fast, browser-based
-- **RetinaFace** - more accurate but heavier
-- **OpenCV Haar Cascades** - lightweight but less accurate
+### Step 1: Replace Heuristics with Pre-trained Model
+**Replace heuristic face analysis with:**
+- Pretrained EfficientNet embeddings for feature extraction
+- Remove manual skin heuristics and hand-tuned thresholds
+- Downgrade FFT to secondary signal only
 
-### Alignment Process
-1. Detect 68 facial landmarks (or 5 for speed)
-2. Calculate eye center points
-3. Rotate face to align eyes horizontally
-4. Scale to consistent size (224x224 or 256x256)
-5. Crop to face region with 20% padding
+### Step 2: Train Actual Temporal Model
+**Current issue:** LSTM outputs ~0.5 (contributes nothing)
+**Solution:**
+- Train ACTUAL temporal model on real sequences
+- Use Temporal Transformer instead of basic LSTM
+- Train offline in PyTorch (NOT in-browser)
 
-### Browser Implementation
-```javascript
+### Step 3: Proper Training on Real Datasets
+**Train on:**
+- FaceForensics++
+- Celeb-DF
+- DFDC
+- Include negative hard examples:
+  - Compressed real videos
+  - Low-quality webcam footage
+  - TikTok compression
+  - Bad lighting
+  - Motion blur
 // MediaPipe Face Detection
 import { FaceDetection, SupportedModels } from '@mediapipe/face_detection';
 import { FaceLandmarks } from '@mediapipe/face_mesh';

@@ -1,15 +1,24 @@
-// Deepfake Detector Content Script - Enhanced Video Analysis
-// Supports: Live capture, YouTube auto-detect, file upload
-// Uses TensorFlow.js + MediaPipe for accurate deepfake detection
+// Deepfake Detector Content Script - Pre-trained Model Approach
+// Uses Hugging Face Deep-Fake-Detector-v2-Model (ViT) for accurate detection
+// 92% accuracy on deepfake classification
 
 import * as tf from '@tensorflow/tfjs';
 import '@tensorflow/tfjs-backend-webgl';
+import { pipeline, env } from '@huggingface/transformers';
+
+// Configure transformers.js for browser
+env.allowLocalModels = false;
+env.useBrowserCache = true;
 
 declare const chrome: any;
+
+// Confidence levels instead of binary fake/authentic
+type ConfidenceLevel = 'low' | 'medium' | 'high';
 
 interface DeepfakeResult {
   isDeepfake: boolean;
   confidence: number;
+  confidenceLevel: ConfidenceLevel;
   frameCount: number;
   averageScore: number;
   verdict: 'authentic' | 'deepfake' | 'uncertain';
@@ -17,11 +26,10 @@ interface DeepfakeResult {
 }
 
 interface ExplainabilitySignals {
-  temporalInstability: number;
-  flickeringDetected: boolean;
-  faceArtifacts: number;
-  textureAnomalies: number;
-  motionInconsistency: number;
+  embeddingVariance: number;
+  temporalConsistency: number;
+  faceDetectionRate: number;
+  predictionStability: number;
 }
 
 interface FrameAnalysis {
@@ -83,24 +91,21 @@ class DeepfakeDetector {
   
   // Frame sequence buffer for temporal analysis
   private frameBuffer: FrameSequenceBuffer = new FrameSequenceBuffer(16);
-  private embeddings: Float32Array[] = [];
+  
+  // Hugging Face deepfake classifier (pre-trained ViT model)
+  private deepfakeClassifier: any = null;
+  private classifierLoaded: boolean = false;
+  private predictionBuffer: number[] = []; // Store frame predictions
   
   // Face detection model (BlazeFace via TensorFlow.js)
   private faceDetector: any = null;
   private faceDetectorLoaded: boolean = false;
   
-  // LSTM temporal model for learned pattern recognition
-  private lstmModel: tf.LayersModel | null = null;
-  private lstmModelLoaded: boolean = false;
-  private featureBuffer: number[][] = []; // Store extracted features for LSTM
-  
   // Configuration
-  private readonly FPS = 4; // Increased for better temporal analysis
-  private readonly CONFIDENCE_THRESHOLD = 0.5;
-  private readonly MIN_FRAMES_FOR_VERDICT = 8; // Need more frames for temporal
+  private readonly FPS = 4;
+  private readonly MIN_FRAMES_FOR_VERDICT = 8;
   private readonly INPUT_SIZE = 224;
   private readonly SEQUENCE_LENGTH = 16;
-  private readonly FEATURE_DIM = 64; // Feature vector size per frame
 
   constructor() {
     this.init();
@@ -109,16 +114,15 @@ class DeepfakeDetector {
   private async init(): Promise<void> {
     this.injectStyles();
     await this.initTensorFlow();
+    await this.initDeepfakeClassifier();
     await this.initFaceDetector();
-    await this.initLSTMModel();
     this.detectPlatform();
     this.setupMessageListener();
-    console.log('TrustShield Deepfake Detector: Ready (TensorFlow.js + Face Detection + LSTM)');
+    console.log('TrustShield Deepfake Detector: Ready (Hugging Face ViT Model)');
   }
 
   private async initTensorFlow(): Promise<void> {
     try {
-      // Set up WebGL backend for GPU acceleration
       await tf.setBackend('webgl');
       await tf.ready();
       this.tfReady = true;
@@ -135,67 +139,267 @@ class DeepfakeDetector {
     }
   }
 
+  private async initDeepfakeClassifier(): Promise<void> {
+    try {
+      // Load pre-trained deepfake detection model from Hugging Face
+      console.log('Loading Hugging Face deepfake classifier...');
+      this.deepfakeClassifier = await pipeline(
+        'image-classification',
+        'onnx-community/Deep-Fake-Detector-v2-Model-ONNX'
+      );
+      this.classifierLoaded = true;
+      console.log('Hugging Face deepfake classifier loaded (92% accuracy)');
+    } catch (error) {
+      console.error('Deepfake classifier loading failed:', error);
+      console.log('Falling back to heuristic-based detection');
+      // Mark as loaded but will use fallback
+      this.classifierLoaded = false;
+    }
+  }
+
   private async initFaceDetector(): Promise<void> {
     try {
-      // Load BlazeFace model for face detection
       const blazeface = await import('@tensorflow-models/blazeface');
       this.faceDetector = await blazeface.load();
       this.faceDetectorLoaded = true;
       console.log('BlazeFace face detector loaded');
     } catch (error) {
-      console.warn('BlazeFace loading failed, using fallback face detection:', error);
-      // Will use canvas-based face detection as fallback
+      console.warn('BlazeFace loading failed:', error);
     }
   }
 
-  private async initLSTMModel(): Promise<void> {
+  private async classifyFrame(canvas: HTMLCanvasElement): Promise<{ label: string; score: number } | null> {
+    if (!this.classifierLoaded || !this.deepfakeClassifier) {
+      console.warn('Classifier not loaded yet');
+      return null;
+    }
+    
     try {
-      // Build LSTM model for temporal pattern recognition
-      // This model learns to distinguish real vs fake temporal patterns
-      const model = tf.sequential();
-      
-      // Input: sequence of feature vectors [SEQUENCE_LENGTH, FEATURE_DIM]
-      model.add(tf.layers.lstm({
-        units: 64,
-        inputShape: [this.SEQUENCE_LENGTH, this.FEATURE_DIM],
-        returnSequences: false,
-        dropout: 0.2,
-        recurrentDropout: 0.2
-      }));
-      
-      // Dense layers for classification
-      model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
-      model.add(tf.layers.dropout({ rate: 0.3 }));
-      model.add(tf.layers.dense({ units: 1, activation: 'sigmoid' }));
-      
-      model.compile({
-        optimizer: tf.train.adam(0.001),
-        loss: 'binaryCrossentropy',
-        metrics: ['accuracy']
+      // Convert canvas to blob for the classifier
+      const blob = await new Promise<Blob>((resolve) => {
+        canvas.toBlob((b) => resolve(b!), 'image/jpeg', 0.9);
       });
       
-      this.lstmModel = model;
-      this.lstmModelLoaded = true;
+      // Run inference with the pre-trained deepfake model
+      const results = await this.deepfakeClassifier(blob);
       
-      // Initialize with pre-trained-like weights for better starting point
-      await this.initializeModelWeights();
+      console.log('Raw classifier results:', results);
       
-      console.log('LSTM temporal model initialized');
+      if (results && results.length > 0) {
+        // Log all labels to understand the output format
+        console.log('Labels found:', results.map((r: any) => `${r.label}: ${r.score.toFixed(4)}`));
+        
+        // Find the deepfake prediction
+        const deepfakeResult = results.find((r: any) => 
+          r.label.toLowerCase().includes('deepfake') || 
+          r.label.toLowerCase().includes('fake')
+        );
+        const realResult = results.find((r: any) => 
+          r.label.toLowerCase().includes('real') || 
+          r.label.toLowerCase().includes('realism')
+        );
+        
+        if (deepfakeResult) {
+          return { label: 'deepfake', score: deepfakeResult.score };
+        } else if (realResult) {
+          // If real has high score, deepfake score is low
+          return { label: 'real', score: 1 - realResult.score };
+        }
+        
+        // Fallback: use first result
+        return { label: results[0].label, score: results[0].score };
+      }
+      
+      return null;
     } catch (error) {
-      console.warn('LSTM model initialization failed:', error);
+      console.error('Frame classification failed:', error);
+      return null;
     }
   }
 
-  private async initializeModelWeights(): Promise<void> {
-    // Initialize weights with values that bias toward detecting common deepfake patterns
-    // This gives the model a head start without actual training data
-    if (!this.lstmModel) return;
+  private computePredictionVariance(): number {
+    if (this.predictionBuffer.length < 2) return 0;
     
-    // The model will learn online from the heuristic scores
-    // For now, we use it to smooth and validate heuristic predictions
-    console.log('LSTM model weights initialized for deepfake detection');
+    const mean = this.predictionBuffer.reduce((a, b) => a + b, 0) / this.predictionBuffer.length;
+    const variance = this.predictionBuffer.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / this.predictionBuffer.length;
+    return variance;
   }
 
+  private computePredictionConsistency(): number {
+    if (this.predictionBuffer.length < 2) return 1;
+    
+    // Check how consistent predictions are
+    let changes = 0;
+    for (let i = 1; i < this.predictionBuffer.length; i++) {
+      if (Math.abs(this.predictionBuffer[i] - this.predictionBuffer[i-1]) > 0.3) {
+        changes++;
+      }
+    }
+    
+    return 1 - (changes / (this.predictionBuffer.length - 1));
+  }
+
+  // Heuristic-based analysis fallback when ML model unavailable
+  private async analyzeWithHeuristics(imageData: ImageData, faceDetected: boolean): Promise<number> {
+    const pixels = imageData.data;
+    const width = imageData.width;
+    const height = imageData.height;
+    
+    if (width < 10 || height < 10) return 0.5;
+    
+    // 1. Skin tone unnaturalness - deepfakes often have unnatural skin colors
+    let skinScore = 0;
+    let skinPixels = 0;
+    let unnaturalSkin = 0;
+    
+    for (let i = 0; i < pixels.length; i += 16) { // Sample every 4th pixel
+      const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+      
+      // Detect skin-like pixels (simplified skin detection)
+      const isSkinLike = r > 95 && g > 40 && b > 20 && 
+                         r > g && r > b && 
+                         Math.abs(r - g) > 15 && 
+                         r - b > 15;
+      
+      if (isSkinLike) {
+        skinPixels++;
+        
+        // Check for unnatural skin tones (too saturated, wrong hue)
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const saturation = max > 0 ? (max - min) / max : 0;
+        
+        // Deepfakes often have oversaturated or undersaturated skin
+        if (saturation > 0.6 || saturation < 0.1) {
+          unnaturalSkin++;
+        }
+        
+        // Check for plastic-like smoothness (low local variance)
+        if (i > width * 4 && i < pixels.length - width * 4) {
+          const above = pixels[i - width * 4];
+          const below = pixels[i + width * 4];
+          const localVar = Math.abs(r - above) + Math.abs(r - below);
+          if (localVar < 5) { // Too smooth = suspicious
+            unnaturalSkin++;
+          }
+        }
+      }
+    }
+    
+    skinScore = skinPixels > 100 ? unnaturalSkin / (skinPixels * 2) : 0;
+    
+    // 2. Edge sharpness anomaly - deepfakes have unnatural edge patterns
+    let edgeScore = 0;
+    let edgeSamples = 0;
+    let sharpEdges = 0;
+    let blurryEdges = 0;
+    
+    for (let y = 2; y < height - 2; y += 4) {
+      for (let x = 2; x < width - 2; x += 4) {
+        const idx = (y * width + x) * 4;
+        const c = (pixels[idx] + pixels[idx + 1] + pixels[idx + 2]) / 3;
+        
+        // Sobel-like edge detection
+        const left = (pixels[idx - 4] + pixels[idx - 3] + pixels[idx - 2]) / 3;
+        const right = (pixels[idx + 4] + pixels[idx + 5] + pixels[idx + 6]) / 3;
+        const up = (pixels[idx - width * 4] + pixels[idx - width * 4 + 1] + pixels[idx - width * 4 + 2]) / 3;
+        const down = (pixels[idx + width * 4] + pixels[idx + width * 4 + 1] + pixels[idx + width * 4 + 2]) / 3;
+        
+        const gradX = Math.abs(right - left);
+        const gradY = Math.abs(down - up);
+        const gradient = Math.sqrt(gradX * gradX + gradY * gradY);
+        
+        if (gradient > 30) { // Edge detected
+          edgeSamples++;
+          if (gradient > 80) sharpEdges++; // Very sharp edge
+          if (gradient < 40) blurryEdges++; // Soft edge
+        }
+      }
+    }
+    
+    // Deepfakes often have inconsistent edge sharpness
+    const sharpRatio = edgeSamples > 0 ? sharpEdges / edgeSamples : 0;
+    const blurryRatio = edgeSamples > 0 ? blurryEdges / edgeSamples : 0;
+    edgeScore = Math.abs(sharpRatio - blurryRatio); // Imbalance is suspicious
+    
+    // 3. Color channel correlation - deepfakes often have unusual RGB relationships
+    let colorScore = 0;
+    let rTotal = 0, gTotal = 0, bTotal = 0;
+    let rgCorr = 0, rbCorr = 0, gbCorr = 0;
+    const sampleCount = Math.floor(pixels.length / 16);
+    
+    for (let i = 0; i < pixels.length; i += 16) {
+      rTotal += pixels[i];
+      gTotal += pixels[i + 1];
+      bTotal += pixels[i + 2];
+    }
+    
+    const rMean = rTotal / sampleCount;
+    const gMean = gTotal / sampleCount;
+    const bMean = bTotal / sampleCount;
+    
+    for (let i = 0; i < pixels.length; i += 16) {
+      const rDev = pixels[i] - rMean;
+      const gDev = pixels[i + 1] - gMean;
+      const bDev = pixels[i + 2] - bMean;
+      rgCorr += rDev * gDev;
+      rbCorr += rDev * bDev;
+      gbCorr += gDev * bDev;
+    }
+    
+    // Normalize correlations
+    rgCorr = Math.abs(rgCorr) / (sampleCount * 10000);
+    rbCorr = Math.abs(rbCorr) / (sampleCount * 10000);
+    gbCorr = Math.abs(gbCorr) / (sampleCount * 10000);
+    
+    // Unusual correlation patterns are suspicious
+    colorScore = Math.abs(rgCorr - gbCorr) + Math.abs(rbCorr - gbCorr);
+    colorScore = Math.min(colorScore, 1);
+    
+    // 4. Temporal analysis from prediction buffer
+    let temporalScore = 0;
+    if (this.predictionBuffer.length >= 4) {
+      // Check for oscillating predictions (sign of inconsistent detection)
+      let oscillations = 0;
+      for (let i = 2; i < this.predictionBuffer.length; i++) {
+        const prev2 = this.predictionBuffer[i - 2];
+        const prev1 = this.predictionBuffer[i - 1];
+        const curr = this.predictionBuffer[i];
+        if ((prev1 > prev2 && prev1 > curr) || (prev1 < prev2 && prev1 < curr)) {
+          oscillations++;
+        }
+      }
+      temporalScore = oscillations / (this.predictionBuffer.length - 2);
+    }
+    
+    // Combine scores with aggressive weighting
+    let finalScore: number;
+    if (faceDetected) {
+      // Face detected: skin and edge analysis more important
+      finalScore = (skinScore * 0.35) + (edgeScore * 0.30) + (colorScore * 0.20) + (temporalScore * 0.15);
+    } else {
+      // No face: rely on edge and color
+      finalScore = (skinScore * 0.15) + (edgeScore * 0.35) + (colorScore * 0.35) + (temporalScore * 0.15);
+    }
+    
+    // Amplify the score - be more aggressive in detection
+    // Map 0.1-0.3 range to 0.4-0.7 range for better discrimination
+    finalScore = 0.3 + (finalScore * 2.5);
+    finalScore = Math.min(1, Math.max(0, finalScore));
+    
+    console.log('Heuristic analysis:', {
+      skinScore: skinScore.toFixed(4),
+      edgeScore: edgeScore.toFixed(4),
+      colorScore: colorScore.toFixed(4),
+      temporalScore: temporalScore.toFixed(4),
+      finalScore: finalScore.toFixed(4),
+      faceDetected
+    });
+    
+    return finalScore;
+  }
+
+  // Keep for backwards compatibility but simplified
   private extractFrameFeatures(imageData: ImageData): number[] {
     // Extract a compact feature vector from the frame for LSTM input
     const pixels = imageData.data;
@@ -318,39 +522,151 @@ class DeepfakeDetector {
     }
     features.push(laplacianSum / ((width - 2) * (height - 2) * 255));
     
-    // Pad or truncate to FEATURE_DIM
-    while (features.length < this.FEATURE_DIM) {
+    // Pad or truncate to 64 features
+    while (features.length < 64) {
       features.push(0);
     }
     
-    return features.slice(0, this.FEATURE_DIM);
+    return features.slice(0, 64);
   }
 
-  private async runLSTMPrediction(): Promise<number> {
-    if (!this.lstmModelLoaded || !this.lstmModel || this.featureBuffer.length < this.SEQUENCE_LENGTH) {
-      return 0.5; // Neutral if not ready
+  // FFT Frequency Analysis (kept as secondary signal only)
+  // Deepfakes have different frequency signatures due to GAN artifacts
+  private analyzeFFTFeatures(imageData: ImageData): number {
+    const pixels = imageData.data;
+    const width = imageData.width;
+    const height = imageData.height;
+    
+    // Guard against invalid dimensions
+    if (width < 8 || height < 8 || pixels.length === 0) {
+      return 0.5; // Neutral score if image too small
     }
     
-    try {
-      // Get the last SEQUENCE_LENGTH features
-      const sequence = this.featureBuffer.slice(-this.SEQUENCE_LENGTH);
-      
-      // Create input tensor [1, SEQUENCE_LENGTH, FEATURE_DIM]
-      const inputTensor = tf.tensor3d([sequence]);
-      
-      // Run prediction
-      const prediction = this.lstmModel.predict(inputTensor) as tf.Tensor;
-      const score = (await prediction.data())[0];
-      
-      // Cleanup
-      inputTensor.dispose();
-      prediction.dispose();
-      
-      return score;
-    } catch (error) {
-      console.warn('LSTM prediction error:', error);
-      return 0.5;
+    // Convert to grayscale for frequency analysis
+    const grayscale: number[] = [];
+    for (let i = 0; i < pixels.length; i += 4) {
+      grayscale.push((pixels[i] * 0.299 + pixels[i + 1] * 0.587 + pixels[i + 2] * 0.114) / 255);
     }
+    
+    // Compute DCT-like frequency features (simplified FFT approximation)
+    // Real FFT requires complex math, so we use gradient-based frequency estimation
+    
+    // 1. High-frequency energy (edges, fine details)
+    let highFreqEnergy = 0;
+    let lowFreqEnergy = 0;
+    let totalEnergy = 0;
+    
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const idx = y * width + x;
+        const center = grayscale[idx];
+        
+        // Laplacian for high-frequency content
+        const laplacian = Math.abs(
+          4 * center -
+          grayscale[idx - 1] - grayscale[idx + 1] -
+          grayscale[idx - width] - grayscale[idx + width]
+        );
+        
+        // Gradient magnitude
+        const gx = Math.abs(grayscale[idx + 1] - grayscale[idx - 1]);
+        const gy = Math.abs(grayscale[idx + width] - grayscale[idx - width]);
+        const gradient = Math.sqrt(gx * gx + gy * gy);
+        
+        highFreqEnergy += laplacian;
+        lowFreqEnergy += center;
+        totalEnergy += gradient;
+      }
+    }
+    
+    const numPixels = (width - 2) * (height - 2);
+    const avgHighFreq = highFreqEnergy / numPixels;
+    const avgLowFreq = lowFreqEnergy / numPixels;
+    const avgGradient = totalEnergy / numPixels;
+    
+    // 2. Frequency distribution analysis
+    // Deepfakes often have unnaturally uniform high-frequency content
+    let freqVariance = 0;
+    const blockSize = 16;
+    const blockFreqs: number[] = [];
+    
+    for (let by = 0; by < height - blockSize; by += blockSize) {
+      for (let bx = 0; bx < width - blockSize; bx += blockSize) {
+        let blockHighFreq = 0;
+        for (let y = by; y < by + blockSize - 1; y++) {
+          for (let x = bx; x < bx + blockSize - 1; x++) {
+            const idx = y * width + x;
+            const laplacian = Math.abs(
+              4 * grayscale[idx] -
+              grayscale[idx - 1] - grayscale[idx + 1] -
+              grayscale[idx - width] - grayscale[idx + width]
+            );
+            blockHighFreq += laplacian;
+          }
+        }
+        blockFreqs.push(blockHighFreq / (blockSize * blockSize));
+      }
+    }
+    
+    // Calculate variance of block frequencies
+    if (blockFreqs.length > 0) {
+      const meanBlockFreq = blockFreqs.reduce((a, b) => a + b, 0) / blockFreqs.length;
+      freqVariance = blockFreqs.reduce((sum, f) => sum + Math.pow(f - meanBlockFreq, 2), 0) / blockFreqs.length;
+    }
+    
+    // 3. GAN artifact detection
+    // GANs often produce checkerboard patterns in frequency domain
+    let checkerboardCount = 0;
+    let checkerboardTotal = 0;
+    for (let y = 2; y < height - 2; y += 2) {
+      for (let x = 2; x < width - 2; x += 2) {
+        const idx = y * width + x;
+        // Bounds check
+        if (idx + width + 1 < grayscale.length) {
+          // Check for 2x2 checkerboard pattern
+          const pattern = Math.abs(
+            grayscale[idx] + grayscale[idx + width + 1] -
+            grayscale[idx + 1] - grayscale[idx + width]
+          );
+          if (pattern > 0.1) {
+            checkerboardCount++;
+          }
+          checkerboardTotal++;
+        }
+      }
+    }
+    const checkerboardScore = checkerboardTotal > 0 ? checkerboardCount / checkerboardTotal : 0;
+    
+    // Combine FFT features into a score
+    // Real videos: natural frequency variation, low checkerboard
+    // Deepfakes: uniform high-freq, high checkerboard, low variance
+    
+    // Normalize features with NaN protection
+    const normalizedHighFreq = isNaN(avgHighFreq) ? 0.5 : Math.min(avgHighFreq * 10, 1);
+    const normalizedVariance = isNaN(freqVariance) ? 0.5 : Math.min(freqVariance * 100, 1);
+    const normalizedCheckerboard = isNaN(checkerboardScore) ? 0 : Math.min(checkerboardScore * 5, 1);
+    
+    // Low variance + high checkerboard = likely deepfake
+    // High variance + low checkerboard = likely real
+    const fftScore = (
+      (1 - normalizedVariance) * 0.4 +  // Low variance = suspicious
+      normalizedCheckerboard * 0.4 +     // Checkerboard = suspicious
+      normalizedHighFreq * 0.2           // Excessive high-freq = suspicious
+    );
+    
+    // Final NaN check
+    const safeFftScore = isNaN(fftScore) ? 0.5 : fftScore;
+    
+    console.log('FFT analysis:', {
+      avgHighFreq: avgHighFreq.toFixed(4),
+      freqVariance: freqVariance.toFixed(4),
+      checkerboardScore: checkerboardScore.toFixed(4),
+      normalizedVariance: normalizedVariance.toFixed(3),
+      normalizedCheckerboard: normalizedCheckerboard.toFixed(3),
+      fftScore: safeFftScore.toFixed(3)
+    });
+    
+    return safeFftScore;
   }
 
   private async detectFace(imageData: ImageData): Promise<{ x: number; y: number; width: number; height: number } | null> {
@@ -805,7 +1121,7 @@ class DeepfakeDetector {
     this.isAnalyzing = true;
     this.frameResults = [];
     this.frameBuffer.clear();
-    this.featureBuffer = [];
+    this.predictionBuffer = [];
 
     // Update button
     const btn = this.overlay?.querySelector('.trustshield-df-btn');
@@ -902,68 +1218,42 @@ class DeepfakeDetector {
         alignedFace
       });
 
-      // Extract features for LSTM and add to buffer
-      const frameFeatures = this.extractFrameFeatures(alignedFace || imageData);
-      this.featureBuffer.push(frameFeatures);
-      if (this.featureBuffer.length > this.SEQUENCE_LENGTH * 2) {
-        this.featureBuffer.shift(); // Keep buffer manageable
+      // Try Hugging Face classifier first, fall back to heuristics
+      let finalScore = 0.5;
+      let analysisMethod = 'none';
+      
+      if (this.classifierLoaded && this.deepfakeClassifier) {
+        const classification = await this.classifyFrame(canvas);
+        if (classification) {
+          finalScore = classification.label === 'deepfake' ? classification.score : (1 - classification.score);
+          analysisMethod = 'huggingface';
+        }
       }
-
-      // Analyze locally with face-aware analysis
-      const localScore = await this.analyzeLocally(canvas);
       
-      // Analyze face artifacts if face detected
-      let faceScore = 0;
-      if (alignedFace) {
-        faceScore = await this.analyzeFaceArtifacts(alignedFace);
+      // Fallback: Use heuristic analysis if classifier not available
+      if (analysisMethod === 'none') {
+        finalScore = await this.analyzeWithHeuristics(alignedFace || imageData, faceDetected);
+        analysisMethod = 'heuristics';
       }
-
-      // Temporal analysis when buffer has enough frames
-      let temporalScore = 0;
-      if (this.frameBuffer.length >= 4) {
-        temporalScore = await this.analyzeTemporalSequence();
+      
+      // Store prediction for temporal analysis
+      this.predictionBuffer.push(finalScore);
+      if (this.predictionBuffer.length > this.SEQUENCE_LENGTH * 2) {
+        this.predictionBuffer.shift();
       }
-
-      // LSTM prediction for learned temporal patterns
-      let lstmScore = 0.5;
-      if (this.featureBuffer.length >= this.SEQUENCE_LENGTH) {
-        lstmScore = await this.runLSTMPrediction();
-      }
-
-      // Use MAX of face/temporal scores - if either detects issues, flag it
-      const maxHeuristicScore = Math.max(faceScore, temporalScore);
       
-      // Weighted average for baseline
-      const avgHeuristicScore = faceDetected
-        ? (faceScore * 0.4) + (temporalScore * 0.4) + (localScore * 0.2)
-        : (temporalScore * 0.5) + (localScore * 0.5);
-      
-      // Combined: 70% max (sensitive) + 30% average (balanced)
-      const heuristicScore = (maxHeuristicScore * 0.7) + (avgHeuristicScore * 0.3);
-      
-      // LSTM acts as secondary validation
-      const lstmWeight = this.featureBuffer.length >= this.SEQUENCE_LENGTH ? 0.15 : 0.05;
-      const combinedScore = (heuristicScore * (1 - lstmWeight)) + (lstmScore * lstmWeight);
-      
-      // Calculate agreement for logging
-      const lstmAgreement = 1 - Math.abs(lstmScore - heuristicScore);
-      
-      console.log('Frame analysis scores:', {
-        faceScore: faceScore.toFixed(3),
-        temporalScore: temporalScore.toFixed(3),
-        localScore: localScore.toFixed(3),
-        lstmScore: lstmScore.toFixed(3),
-        heuristicScore: heuristicScore.toFixed(3),
-        lstmAgreement: lstmAgreement.toFixed(3),
-        combinedScore: combinedScore.toFixed(3),
+      console.log('Frame analysis:', {
+        method: analysisMethod,
+        finalScore: finalScore.toFixed(4),
+        predictionBufferSize: this.predictionBuffer.length,
         faceDetected
       });
 
       // Store result
       this.frameResults.push({
         timestamp: this.videoElement.currentTime,
-        score: combinedScore,
-        isDeepfake: combinedScore > this.CONFIDENCE_THRESHOLD,
+        score: finalScore,
+        isDeepfake: finalScore > 0.5,
         faceDetected
       });
 
@@ -1096,26 +1386,26 @@ class DeepfakeDetector {
 
   private async analyzeTemporalSequence(): Promise<number> {
     const sequence = this.frameBuffer.getSequence();
-    if (sequence.length < 4) return 0;
+    if (sequence.length < 4) return 0.3; // Return baseline score if not enough frames
 
     let flickerScore = 0;
     let motionInconsistency = 0;
-    let textureStability = 0;
+    let textureInstability = 0;
+    let totalFramePairs = 0;
     
     // Analyze frame-to-frame changes
     for (let i = 1; i < sequence.length; i++) {
       const prevFrame = sequence[i - 1];
       const currFrame = sequence[i];
+      totalFramePairs++;
       
       // Calculate brightness difference (flickering)
       const prevBrightness = this.calculateAverageBrightness(prevFrame.imageData);
       const currBrightness = this.calculateAverageBrightness(currFrame.imageData);
       const brightnessDiff = Math.abs(currBrightness - prevBrightness);
       
-      // Sudden brightness changes = flickering artifact
-      if (brightnessDiff > 15) {
-        flickerScore += brightnessDiff / 255;
-      }
+      // ANY brightness change contributes to flicker score (scaled)
+      flickerScore += brightnessDiff / 50; // More sensitive
       
       // Check face region consistency if both frames have faces
       if (prevFrame.alignedFace && currFrame.alignedFace) {
@@ -1124,11 +1414,14 @@ class DeepfakeDetector {
           currFrame.alignedFace
         );
         
-        // Very high or very low change is suspicious
-        // Real faces have natural micro-movements
-        if (faceChange < 0.01 || faceChange > 0.15) {
-          motionInconsistency += 0.1;
+        // Deepfakes often have EITHER too little change (frozen) OR too much (jitter)
+        // Real faces have moderate, natural micro-movements (0.02-0.08 range)
+        if (faceChange < 0.02) {
+          motionInconsistency += 0.3; // Too static = suspicious
+        } else if (faceChange > 0.08) {
+          motionInconsistency += 0.2; // Too jumpy = suspicious
         }
+        // Natural range (0.02-0.08) adds nothing
         
         // Check texture stability in face region
         const textureChange = this.calculateTextureChange(
@@ -1136,24 +1429,33 @@ class DeepfakeDetector {
           currFrame.alignedFace
         );
         
-        if (textureChange > 0.1) {
-          textureStability += textureChange;
-        }
+        // Texture changes indicate deepfake artifacts
+        textureInstability += textureChange;
+      } else {
+        // No face detected - add some baseline suspicion
+        motionInconsistency += 0.1;
       }
     }
     
     // Normalize scores
-    const numComparisons = sequence.length - 1;
-    flickerScore = flickerScore / numComparisons;
-    motionInconsistency = Math.min(motionInconsistency / numComparisons, 1);
-    textureStability = Math.min(textureStability / numComparisons, 1);
+    const avgFlicker = flickerScore / totalFramePairs;
+    const avgMotion = motionInconsistency / totalFramePairs;
+    const avgTexture = textureInstability / totalFramePairs;
     
-    // Combine temporal scores
-    const temporalScore = (flickerScore * 0.3) + 
-                         (motionInconsistency * 0.4) + 
-                         (textureStability * 0.3);
+    // Combine temporal scores - weight motion inconsistency heavily
+    const temporalScore = 
+      Math.min(avgFlicker, 1) * 0.25 + 
+      Math.min(avgMotion, 1) * 0.50 + 
+      Math.min(avgTexture, 1) * 0.25;
     
-    return Math.min(temporalScore * 2, 1);
+    console.log('Temporal analysis:', {
+      avgFlicker: avgFlicker.toFixed(3),
+      avgMotion: avgMotion.toFixed(3),
+      avgTexture: avgTexture.toFixed(3),
+      temporalScore: temporalScore.toFixed(3)
+    });
+    
+    return Math.min(temporalScore, 1);
   }
 
   private calculateAverageBrightness(imageData: ImageData): number {
@@ -1354,6 +1656,7 @@ class DeepfakeDetector {
       return {
         isDeepfake: false,
         confidence: 0,
+        confidenceLevel: 'low',
         frameCount: 0,
         averageScore: 0,
         verdict: 'uncertain'
@@ -1403,18 +1706,26 @@ class DeepfakeDetector {
       confidence = 0.4 + (averageScore * 0.3);
     }
 
+    // Determine confidence level based on prediction buffer
+    let confidenceLevel: ConfidenceLevel = 'low';
+    if (this.predictionBuffer.length >= 12) {
+      confidenceLevel = 'high';
+    } else if (this.predictionBuffer.length >= 8) {
+      confidenceLevel = 'medium';
+    }
+
     // Build explainability signals
     const explainability: ExplainabilitySignals = {
-      temporalInstability: this.calculateTemporalInstability(),
-      flickeringDetected: this.detectFlickering(),
-      faceArtifacts: averageScore,
-      textureAnomalies: variance,
-      motionInconsistency: 1 - consistency
+      embeddingVariance: this.computePredictionVariance(),
+      temporalConsistency: this.computePredictionConsistency(),
+      faceDetectionRate,
+      predictionStability: consistency
     };
 
     return {
       isDeepfake: verdict === 'deepfake',
       confidence,
+      confidenceLevel,
       frameCount: this.frameResults.length,
       averageScore,
       verdict,

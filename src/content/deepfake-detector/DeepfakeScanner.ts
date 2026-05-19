@@ -2,6 +2,7 @@
 
 import { ScanResult, ScannerConfig, DetectorResult } from './types';
 import { BaseDetector } from './detectors/BaseDetector';
+import { LocalONNXDetector } from './detectors/LocalONNXDetector';
 import { BlinkDetector } from './detectors/BlinkDetector';
 import { LandmarkDetector } from './detectors/LandmarkDetector';
 import { PPGDetector } from './detectors/PPGDetector';
@@ -24,15 +25,14 @@ export class DeepfakeScanner {
   private getDefaultConfig(): ScannerConfig {
     return {
       detectors: {
-        // ML-based detectors now use tfjs runtime (works in extensions)
-        landmarks: { enabled: true, weight: 0.25, threshold: 0.15, timeout: 10000 },
-        blinks: { enabled: true, weight: 0.20, threshold: 0.5, timeout: 15000 },
-        // PPG detector - analyzes color changes for heartbeat (no ML required)
-        ppg: { enabled: true, weight: 0.20, threshold: 0.3, timeout: 8000 },
-        // LipSync requires audio - disable for now
-        lipsync: { enabled: false, weight: 0.20, threshold: 0.6, timeout: 8000 },
-        // FrequencyDetector - FFT analysis for GAN artifacts
-        frequency: { enabled: true, weight: 0.15, threshold: 0.4, timeout: 5000 },
+        // Local ONNX model - PRIMARY detector (runs entirely in browser)
+        huggingface: { enabled: true, weight: 0.80, threshold: 0.5, timeout: 60000 },
+        // Legacy detectors - disabled by default, kept for fallback
+        landmarks: { enabled: false, weight: 0.05, threshold: 0.15, timeout: 10000 },
+        blinks: { enabled: false, weight: 0.05, threshold: 0.5, timeout: 15000 },
+        ppg: { enabled: false, weight: 0.05, threshold: 0.3, timeout: 8000 },
+        lipsync: { enabled: false, weight: 0.00, threshold: 0.6, timeout: 8000 },
+        frequency: { enabled: false, weight: 0.05, threshold: 0.4, timeout: 5000 },
       },
       debug: true,
     };
@@ -41,6 +41,18 @@ export class DeepfakeScanner {
   private initializeDetectors(): void {
     const { detectors } = this.config;
 
+    // Local ONNX detector - PRIMARY (runs in browser, no API calls)
+    if (detectors.huggingface.enabled) {
+      this.detectors.set(
+        'huggingface',
+        new LocalONNXDetector({
+          threshold: detectors.huggingface.threshold,
+          timeout: detectors.huggingface.timeout,
+        })
+      );
+    }
+
+    // Legacy detectors - kept for fallback/ensemble
     if (detectors.landmarks.enabled) {
       this.detectors.set(
         'landmarks',

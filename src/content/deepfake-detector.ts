@@ -206,17 +206,39 @@ class DeepfakeDetectorContentScript {
   }
 
   private updateButtonWithResult(button: HTMLButtonElement, result: ScanResult): void {
+    // Get HuggingFace detector details if available
+    const hfResult = result.detectorResults?.huggingface;
+    const verdict = hfResult?.details?.verdict || (result.isFake ? 'Potential Deepfake' : 'Appears Authentic');
+    const framesAnalyzed = hfResult?.details?.framesAnalyzed || 0;
+    const confidence = (result.overallConfidence * 100).toFixed(0);
+
     if (result.isFake) {
       button.innerHTML = `
         <span style="font-size: 14px;">⚠️</span>
-        <span>Potential Deepfake (${(result.overallConfidence * 100).toFixed(0)}%)</span>
+        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
+          <span style="font-weight: 600;">${verdict}</span>
+          <span style="font-size: 10px; opacity: 0.8;">Confidence: ${confidence}% | Frames: ${framesAnalyzed}</span>
+        </div>
       `;
       button.style.background = 'rgba(239, 68, 68, 0.9)';
       button.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+    } else if (hfResult?.details?.verdict === 'Suspicious / Uncertain') {
+      button.innerHTML = `
+        <span style="font-size: 14px;">⚠️</span>
+        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
+          <span style="font-weight: 600;">Uncertain</span>
+          <span style="font-size: 10px; opacity: 0.8;">Score: ${confidence}% | Frames: ${framesAnalyzed}</span>
+        </div>
+      `;
+      button.style.background = 'rgba(245, 158, 11, 0.9)';
+      button.style.borderColor = 'rgba(245, 158, 11, 0.5)';
     } else {
       button.innerHTML = `
         <span style="font-size: 14px;">✓</span>
-        <span>Appears Authentic</span>
+        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
+          <span style="font-weight: 600;">Likely Authentic</span>
+          <span style="font-size: 10px; opacity: 0.8;">Confidence: ${confidence}% | Frames: ${framesAnalyzed}</span>
+        </div>
       `;
       button.style.background = 'rgba(34, 197, 94, 0.9)';
       button.style.borderColor = 'rgba(34, 197, 94, 0.5)';

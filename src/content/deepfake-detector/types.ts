@@ -24,6 +24,7 @@ export interface DetectorConfig {
 
 export interface ScannerConfig {
   detectors: {
+    huggingface: DetectorConfig;
     landmarks: DetectorConfig;
     blinks: DetectorConfig;
     ppg: DetectorConfig;

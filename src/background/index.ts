@@ -128,6 +128,12 @@ class TrustShieldServiceWorker {
     this.messageHandlers.set('SETTINGS_UPDATE', this.handleSettingsUpdate.bind(this));
     this.messageHandlers.set('PRIVACY_CONSENT_RESPONSE', this.handlePrivacyConsentResponse.bind(this));
     this.messageHandlers.set('GET_API_KEY', this.handleGetApiKey.bind(this));
+    
+    // Reality Defender API proxy handlers (bypass CORS)
+    this.messageHandlers.set('RD_GET_PRESIGNED_URL', this.handleRDGetPresignedUrl.bind(this));
+    this.messageHandlers.set('RD_UPLOAD_VIDEO', this.handleRDUploadVideo.bind(this));
+    this.messageHandlers.set('RD_UPLOAD_IMAGE', this.handleRDUploadImage.bind(this));
+    this.messageHandlers.set('RD_GET_RESULTS', this.handleRDGetResults.bind(this));
   }
 
   // Set up event listeners
@@ -343,6 +349,168 @@ class TrustShieldServiceWorker {
     // Return the API key from environment (embedded at build time)
     const apiKey = (import.meta as any).env?.VITE_OPENROUTER_API_KEY || '';
     sendResponse({ apiKey });
+  }
+
+  // Reality Defender API proxy handlers (bypass CORS from content scripts)
+  private async handleRDGetPresignedUrl(payload: any, sender: any, sendResponse: Function): Promise<void> {
+    try {
+      const apiKey = (import.meta as any).env?.VITE_REALITYDEFENDER_API_KEY || '';
+      const { fileName } = payload;
+      
+      console.log('🔑 Requesting presigned URL for:', fileName);
+      console.log('🔑 API Key present:', !!apiKey);
+      
+      const response = await fetch('https://api.prd.realitydefender.xyz/api/files/aws-presigned', {
+        method: 'POST',
+        headers: {
+          'X-API-KEY': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ fileName }),
+      });
+
+      console.log('🔑 Presigned URL response status:', response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('🔑 Presigned URL error:', errorText);
+        sendResponse({ error: `Failed to get presigned URL: ${response.status} - ${errorText}` });
+        return;
+      }
+
+      const data = await response.json();
+      console.log('🔑 Full API response keys:', Object.keys(data));
+      
+      // Reality Defender API returns presigned URL nested under response.signedUrl
+      const presignedUrl = data.response?.signedUrl || 
+                          data.presignedUrl || data.presigned_url || 
+                          data.url || data.signedUrl || 
+                          data.signed_url || data.uploadUrl || data.upload_url || 
+                          data.s3Url || data.s3_url;
+      const requestId = data.requestId || data.request_id || data.id || data.mediaId || data.media_id;
+      
+      console.log('🔑 Extracted presigned URL:', presignedUrl ? presignedUrl.substring(0, 100) + '...' : 'NONE FOUND');
+      console.log('🔑 Extracted Request ID:', requestId);
+      
+      if (!presignedUrl) {
+        console.error('🔑 ERROR: Could not find presigned URL in response. Available keys:', Object.keys(data));
+        sendResponse({ error: `No presigned URL in response. Keys: ${Object.keys(data).join(', ')}` });
+        return;
+      }
+      
+      sendResponse({ success: true, presignedUrl, requestId });
+    } catch (error) {
+      console.error('🔑 Presigned URL exception:', error);
+      sendResponse({ error: `Presigned URL request failed: ${error}` });
+    }
+  }
+
+  private async handleRDUploadVideo(payload: any, sender: any, sendResponse: Function): Promise<void> {
+    try {
+      const { presignedUrl, videoData } = payload;
+      
+      // Convert base64 back to blob
+      const binaryString = atob(videoData);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'video/webm' });
+
+      const response = await fetch(presignedUrl, {
+        method: 'PUT',
+        body: blob,
+      });
+
+      if (!response.ok) {
+        sendResponse({ error: `Failed to upload video: ${response.status}` });
+        return;
+      }
+
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ error: `Video upload failed: ${error}` });
+    }
+  }
+
+  private async handleRDUploadImage(payload: any, sender: any, sendResponse: Function): Promise<void> {
+    try {
+      const { presignedUrl, imageData } = payload;
+      
+      console.log('📤 Uploading image to presigned URL:', presignedUrl?.substring(0, 100) + '...');
+      console.log('📤 Image data length:', imageData?.length);
+      
+      if (!presignedUrl) {
+        sendResponse({ error: 'No presigned URL provided' });
+        return;
+      }
+      
+      if (!imageData) {
+        sendResponse({ error: 'No image data provided' });
+        return;
+      }
+      
+      // Convert base64 back to blob
+      const binaryString = atob(imageData);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: 'image/jpeg' });
+      
+      console.log('📤 Blob size:', blob.size, 'bytes');
+
+      const response = await fetch(presignedUrl, {
+        method: 'PUT',
+        body: blob,
+        headers: {
+          'Content-Type': 'image/jpeg',
+        },
+      });
+
+      console.log('📤 Upload response status:', response.status);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('📤 Upload error:', errorText);
+        sendResponse({ error: `Failed to upload image: ${response.status} - ${errorText}` });
+        return;
+      }
+
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('📤 Upload exception:', error);
+      sendResponse({ error: `Image upload failed: ${error}` });
+    }
+  }
+
+  private async handleRDGetResults(payload: any, sender: any, sendResponse: Function): Promise<void> {
+    try {
+      const apiKey = (import.meta as any).env?.VITE_REALITYDEFENDER_API_KEY || '';
+      const { requestId } = payload;
+      
+      const response = await fetch(`https://api.prd.realitydefender.xyz/api/media/users/${requestId}`, {
+        method: 'GET',
+        headers: {
+          'X-API-KEY': apiKey,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          sendResponse({ success: true, status: 'PROCESSING' });
+          return;
+        }
+        sendResponse({ error: `Failed to get results: ${response.status}` });
+        return;
+      }
+
+      const data = await response.json();
+      sendResponse({ success: true, data });
+    } catch (error) {
+      sendResponse({ error: `Get results failed: ${error}` });
+    }
   }
 
   // Utility methods

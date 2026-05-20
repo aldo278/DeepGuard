@@ -2,6 +2,7 @@
 
 import { ScanResult, ScannerConfig, DetectorResult } from './types';
 import { BaseDetector } from './detectors/BaseDetector';
+import { RealityDefenderDetector } from './detectors/RealityDefenderDetector';
 import { HuggingFaceDetector } from './detectors/HuggingFaceDetector';
 import { BlinkDetector } from './detectors/BlinkDetector';
 import { LandmarkDetector } from './detectors/LandmarkDetector';
@@ -25,8 +26,10 @@ export class DeepfakeScanner {
   private getDefaultConfig(): ScannerConfig {
     return {
       detectors: {
-        // Local ONNX model - PRIMARY detector (runs entirely in browser)
-        huggingface: { enabled: true, weight: 0.80, threshold: 0.5, timeout: 60000 },
+        // Reality Defender - PRIMARY detector (enterprise-grade API)
+        realitydefender: { enabled: true, weight: 1.0, threshold: 0.5, timeout: 120000 },
+        // HuggingFace - FALLBACK detector (if Reality Defender fails)
+        huggingface: { enabled: false, weight: 0.80, threshold: 0.5, timeout: 60000 },
         // Legacy detectors - disabled by default, kept for fallback
         landmarks: { enabled: false, weight: 0.05, threshold: 0.15, timeout: 10000 },
         blinks: { enabled: false, weight: 0.05, threshold: 0.5, timeout: 15000 },
@@ -41,7 +44,18 @@ export class DeepfakeScanner {
   private initializeDetectors(): void {
     const { detectors } = this.config;
 
-    // HuggingFace API detector - PRIMARY (iemsayan/deepfake-detector)
+    // Reality Defender API detector - PRIMARY (enterprise-grade)
+    if (detectors.realitydefender.enabled) {
+      this.detectors.set(
+        'realitydefender',
+        new RealityDefenderDetector({
+          threshold: detectors.realitydefender.threshold,
+          timeout: detectors.realitydefender.timeout,
+        })
+      );
+    }
+
+    // HuggingFace API detector - FALLBACK
     if (detectors.huggingface.enabled) {
       this.detectors.set(
         'huggingface',
@@ -143,22 +157,28 @@ export class DeepfakeScanner {
     });
 
     let weightedScore = 0;
+    let totalWeight = 0;
     const signals: string[] = [];
 
     results.forEach(({ name, result }) => {
       const weight = this.config.detectors[name as keyof typeof this.config.detectors]?.weight || 0;
+      totalWeight += weight;
       
       if (result.isFake) {
-        weightedScore += weight;
+        // Use the detector's actual confidence weighted by its weight
+        weightedScore += result.confidence * weight;
         signals.push(name);
       }
     });
 
+    // Normalize the weighted score
+    const normalizedScore = totalWeight > 0 ? weightedScore / totalWeight : 0;
+
     const totalProcessingTime = performance.now() - startTime;
 
     const scanResult: ScanResult = {
-      isFake: weightedScore > 0.5,
-      overallConfidence: weightedScore,
+      isFake: normalizedScore > 0.5,
+      overallConfidence: normalizedScore,
       signals,
       detectorResults,
       totalProcessingTime,

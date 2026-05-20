@@ -206,28 +206,8 @@ class DeepfakeDetectorContentScript {
   }
 
   private updateButtonWithResult(button: HTMLButtonElement, result: ScanResult): void {
-    // Get HuggingFace detector details if available
-    const hfResult = result.detectorResults?.huggingface;
-    const framesAnalyzed = hfResult?.details?.framesAnalyzed || 0;
-    const averageScore = hfResult?.details?.averageScore || 0;
-    const maxScore = hfResult?.details?.maxScore || 0;
-    const framePredictions = hfResult?.details?.framePredictions || [];
-    
-    // Count frames flagged as FAKE (score > 0.5)
-    const fakeFrameCount = framePredictions.filter((p: any) => p.score > 0.5).length;
-    const fakeFrameRatio = framesAnalyzed > 0 ? fakeFrameCount / framesAnalyzed : 0;
-    
-    // Use average score as the primary metric
-    // This is more balanced and reduces false positives
-    // Only boost if a significant portion of frames are flagged as fake
-    let finalScore = averageScore;
-    
-    // If more than 40% of frames are flagged as fake, use the higher of average or ratio
-    if (fakeFrameRatio > 0.4) {
-      finalScore = Math.max(averageScore, fakeFrameRatio);
-    }
-    
-    const fakeScore = Math.round(finalScore * 100);
+    // Use the scan result's overall confidence - this comes from the scanner aggregation
+    const fakeScore = Math.round(result.overallConfidence * 100);
     const authenticScore = 100 - fakeScore;
     
     // Generate gradient color based on fake score
@@ -237,15 +217,12 @@ class DeepfakeDetectorContentScript {
     // Determine verdict text based on score
     let verdict: string;
     let icon: string;
-    if (fakeScore >= 65) {
+    if (fakeScore >= 50) {
       verdict = 'Likely Deepfake';
       icon = '⚠️';
-    } else if (fakeScore >= 50) {
+    } else if (fakeScore >= 30) {
       verdict = 'Possibly Manipulated';
       icon = '⚠️';
-    } else if (fakeScore >= 35) {
-      verdict = 'Uncertain';
-      icon = '❓';
     } else {
       verdict = 'Likely Authentic';
       icon = '✓';
@@ -256,7 +233,7 @@ class DeepfakeDetectorContentScript {
       <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
         <span style="font-weight: 600;">${verdict}</span>
         <span style="font-size: 10px; opacity: 0.9;">
-          Fake: ${fakeScore}% | Real: ${authenticScore}% | Frames: ${framesAnalyzed}
+          Fake: ${fakeScore}% | Real: ${authenticScore}%
         </span>
       </div>
     `;
@@ -477,13 +454,17 @@ class DeepfakeDetectorContentScript {
   }
 
   private displayResult(result: ScanResult): void {
+    console.log('🎨 DisplayResult called with:', { isFake: result.isFake, overallConfidence: result.overallConfidence });
+    
     if (result.isFake) {
+      console.log('🎨 Showing FAKE overlay');
       this.updateOverlay(
         'Potential Deepfake Detected',
         `Confidence: ${(result.overallConfidence * 100).toFixed(1)}% | Signals: ${result.signals.join(', ')}`,
         'warning'
       );
     } else {
+      console.log('🎨 Showing AUTHENTIC overlay');
       this.updateOverlay(
         'Video Appears Authentic',
         `Confidence: ${((1 - result.overallConfidence) * 100).toFixed(1)}%`,

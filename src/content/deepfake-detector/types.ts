@@ -24,6 +24,7 @@ export interface DetectorConfig {
 
 export interface ScannerConfig {
   detectors: {
+    realitydefender: DetectorConfig;
     huggingface: DetectorConfig;
     landmarks: DetectorConfig;
     blinks: DetectorConfig;

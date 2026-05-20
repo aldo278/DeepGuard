@@ -17,13 +17,13 @@ interface HFApiResponse {
 }
 
 export class HuggingFaceDetector extends BaseDetector {
-  // HuggingFace Space API endpoint (iemsayan/deepfake-detector)
+  // HuggingFace Gradio Space API (CORS-enabled)
   private readonly API_URL = 'https://iemsayan-deepfake-detector.hf.space';
   private readonly API_ENDPOINT = '/gradio_api/call/predict';
   
   // Frame capture settings
-  private readonly FRAME_COUNT = 12;
-  private readonly FRAME_INTERVAL_MS = 400;
+  private readonly FRAME_COUNT = 18;
+  private readonly FRAME_INTERVAL_MS = 300;
   
   // Thresholds - more strict
   private readonly FAKE_THRESHOLD = 0.50;
@@ -207,18 +207,65 @@ export class HuggingFaceDetector extends BaseDetector {
       throw new Error('Failed to parse API response');
     }
 
-    // Determine score based on label
+    // The API returns "FAKE (XX%)" or "REAL (XX%)"
+    // For FAKE: fake score = confidence (e.g., FAKE 65% → 0.65 fake score)
+    // For REAL: fake score = 1 - confidence (e.g., REAL 65% → 0.35 fake score)
     const isFake = result.label.toUpperCase().includes('FAKE');
-    const score = isFake ? result.confidence : 1 - result.confidence;
+    const fakeScore = isFake ? result.confidence : (1 - result.confidence);
 
-    console.log(`Frame ${frameIndex}: ${result.label} (${(result.confidence * 100).toFixed(1)}%)`);
+    console.log(`Frame ${frameIndex}: ${result.label} (${(result.confidence * 100).toFixed(1)}%) → Fake score: ${(fakeScore * 100).toFixed(1)}%`);
 
     return {
       frameIndex,
-      score,
+      score: fakeScore,
       label: result.label,
       timestamp,
     };
+  }
+
+  /**
+   * Parse Server-Sent Events response from Gradio API
+   */
+  private parseSSEResponse(responseText: string): HFApiResponse | null {
+    const lines = responseText.split('\n');
+    
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        const dataStr = line.substring(5).trim();
+        try {
+          const data = JSON.parse(dataStr);
+          
+          if (Array.isArray(data) && data.length > 0) {
+            const output = data[0];
+            
+            if (typeof output === 'string') {
+              // Format: "FAKE (54.27%)" or "REAL (53.06%)"
+              const matchPercent = output.match(/(REAL|FAKE)\s*\((\d+\.?\d*)%?\)/i);
+              if (matchPercent) {
+                const label = matchPercent[1].toUpperCase();
+                const confidence = parseFloat(matchPercent[2]) / 100;
+                return { label, confidence };
+              }
+              
+              // Fallback: check for FAKE/REAL keywords
+              if (output.toUpperCase().includes('FAKE')) {
+                const confMatch = output.match(/(\d+\.?\d*)/);
+                const confidence = confMatch ? parseFloat(confMatch[1]) / 100 : 0.6;
+                return { label: 'FAKE', confidence };
+              } else if (output.toUpperCase().includes('REAL')) {
+                const confMatch = output.match(/(\d+\.?\d*)/);
+                const confidence = confMatch ? parseFloat(confMatch[1]) / 100 : 0.6;
+                return { label: 'REAL', confidence };
+              }
+            }
+          }
+        } catch (e) {
+          // Continue to next line
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -282,93 +329,4 @@ export class HuggingFaceDetector extends BaseDetector {
     };
   }
 
-  /**
-   * Convert Blob to base64 data URL
-   */
-  private blobToBase64(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-        } else {
-          reject(new Error('Failed to convert blob to base64'));
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  /**
-   * Parse Server-Sent Events response from Gradio API
-   * PraneshJs/fakevideodetect returns text output
-   */
-  private parseSSEResponse(responseText: string): HFApiResponse | null {
-    const lines = responseText.split('\n');
-    
-    console.log('📥 Raw API response:', responseText);
-    
-    for (const line of lines) {
-      if (line.startsWith('data:')) {
-        const dataStr = line.substring(5).trim();
-        try {
-          const data = JSON.parse(dataStr);
-          console.log('📦 Parsed data:', data);
-          
-          if (Array.isArray(data) && data.length > 0) {
-            const output = data[0];
-            
-            if (typeof output === 'string') {
-              // Format 1: iemsayan format "FAKE (54.27%)" or "REAL (53.06%)"
-              const matchPercent = output.match(/(REAL|FAKE)\s*\((\d+\.?\d*)%?\)/i);
-              if (matchPercent) {
-                const label = matchPercent[1].toUpperCase();
-                const confidence = parseFloat(matchPercent[2]) / 100;
-                console.log(`✅ Parsed: ${label} with ${(confidence * 100).toFixed(1)}% confidence`);
-                return { label, confidence };
-              }
-              
-              // Format 2: "The image is REAL/FAKE. Confidence score is: XX.XX"
-              const matchConfScore = output.match(/is\s+(REAL|FAKE).*?(\d+\.?\d*)/i);
-              if (matchConfScore) {
-                const label = matchConfScore[1].toUpperCase();
-                const confidence = parseFloat(matchConfScore[2]) / 100;
-                console.log(`✅ Parsed: ${label} with ${(confidence * 100).toFixed(1)}% confidence`);
-                return { label, confidence };
-              }
-              
-              // Format 3: Simple FAKE/REAL detection
-              if (output.toUpperCase().includes('FAKE')) {
-                const confMatch = output.match(/(\d+\.?\d*)/);
-                const confidence = confMatch ? parseFloat(confMatch[1]) / 100 : 0.75;
-                console.log(`✅ Detected FAKE with ${(confidence * 100).toFixed(1)}% confidence`);
-                return { label: 'FAKE', confidence };
-              } else if (output.toUpperCase().includes('REAL')) {
-                const confMatch = output.match(/(\d+\.?\d*)/);
-                const confidence = confMatch ? parseFloat(confMatch[1]) / 100 : 0.75;
-                console.log(`✅ Detected REAL with ${(confidence * 100).toFixed(1)}% confidence`);
-                return { label: 'REAL', confidence };
-              }
-              
-              // Return raw output as label
-              return { label: output, confidence: 0.5 };
-            }
-            
-            // Handle object format
-            if (typeof output === 'object' && output !== null) {
-              return {
-                label: output.label || output.prediction || output.result || 'unknown',
-                confidence: output.confidence || output.score || output.probability || 0.5,
-              };
-            }
-          }
-        } catch (e) {
-          console.warn('Failed to parse JSON:', e);
-        }
-      }
-    }
-
-    return null;
-  }
 }

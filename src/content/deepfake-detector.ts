@@ -217,17 +217,17 @@ class DeepfakeDetectorContentScript {
     const fakeFrameCount = framePredictions.filter((p: any) => p.score > 0.5).length;
     const fakeFrameRatio = framesAnalyzed > 0 ? fakeFrameCount / framesAnalyzed : 0;
     
-    // Calculate fake score using weighted combination:
-    // - Average score (how confident the model is overall)
-    // - Max score (highest single frame detection)
-    // - Fake frame ratio (what % of frames were flagged)
-    const weightedScore = Math.max(
-      averageScore,
-      maxScore * 0.8,  // Weight max score slightly less
-      fakeFrameRatio
-    );
+    // Use average score as the primary metric
+    // This is more balanced and reduces false positives
+    // Only boost if a significant portion of frames are flagged as fake
+    let finalScore = averageScore;
     
-    const fakeScore = Math.round(weightedScore * 100);
+    // If more than 40% of frames are flagged as fake, use the higher of average or ratio
+    if (fakeFrameRatio > 0.4) {
+      finalScore = Math.max(averageScore, fakeFrameRatio);
+    }
+    
+    const fakeScore = Math.round(finalScore * 100);
     const authenticScore = 100 - fakeScore;
     
     // Generate gradient color based on fake score

@@ -1,12 +1,12 @@
 // HuggingFaceDetector.ts - Pretrained Deepfake Detection via HuggingFace Space
-// Uploads face crops to a HuggingFace Gradio API and aggregates predictions
+// Uses PraneshJs/fakevideodetect image endpoint for frame-by-frame analysis
 
 import { BaseDetector } from './BaseDetector';
 import { DetectorResult } from '../types';
 
 interface FramePrediction {
   frameIndex: number;
-  score: number; // 0-1, higher = more likely fake
+  score: number;
   label: string;
   timestamp: number;
 }
@@ -17,18 +17,17 @@ interface HFApiResponse {
 }
 
 export class HuggingFaceDetector extends BaseDetector {
-  // HuggingFace Space API endpoint (Gradio API format)
-  private readonly API_URL = 'https://jabrave-deepfake-api.hf.space';
+  // HuggingFace Space API endpoint (iemsayan/deepfake-detector)
+  private readonly API_URL = 'https://iemsayan-deepfake-detector.hf.space';
   private readonly API_ENDPOINT = '/gradio_api/call/predict';
   
   // Frame capture settings
-  private readonly FRAME_COUNT = 8;
-  private readonly FRAME_INTERVAL_MS = 500;
-  private readonly FACE_CROP_SIZE = 224;
+  private readonly FRAME_COUNT = 12;
+  private readonly FRAME_INTERVAL_MS = 400;
   
-  // Aggregation thresholds
-  private readonly FAKE_THRESHOLD = 0.65;
-  private readonly SUSPICIOUS_THRESHOLD = 0.45;
+  // Thresholds - more strict
+  private readonly FAKE_THRESHOLD = 0.50;
+  private readonly SUSPICIOUS_THRESHOLD = 0.35;
 
   constructor(config: { threshold: number; timeout?: number }) {
     super('HuggingFaceDetector', config);
@@ -39,9 +38,10 @@ export class HuggingFaceDetector extends BaseDetector {
     
     try {
       this.log('Starting HuggingFace deepfake detection');
-      console.log('🤖 HuggingFaceDetector: Starting analysis...');
+      console.log('🤖 HuggingFaceDetector: Starting frame analysis...');
 
       // Step 1: Capture frames from video
+      console.log(`📸 Capturing ${this.FRAME_COUNT} frames...`);
       const frames = await this.captureFrames(videoElement);
       console.log(`📸 Captured ${frames.length} frames`);
 
@@ -49,19 +49,12 @@ export class HuggingFaceDetector extends BaseDetector {
         throw new Error('No frames captured from video');
       }
 
-      // Step 2: Detect and crop faces from each frame
-      const faceCrops = await this.extractFaceCrops(frames, videoElement);
-      console.log(`👤 Extracted ${faceCrops.length} face crops`);
-
-      if (faceCrops.length === 0) {
-        throw new Error('No faces detected in video frames');
-      }
-
-      // Step 3: Upload each face crop to HuggingFace API
-      const predictions = await this.getPredictions(faceCrops);
+      // Step 2: Upload each frame to HuggingFace API
+      console.log('⬆️ Analyzing frames with HuggingFace...');
+      const predictions = await this.getPredictions(frames);
       console.log(`🔮 Received ${predictions.length} predictions`);
 
-      // Step 4: Aggregate predictions
+      // Step 3: Aggregate predictions
       const aggregatedResult = this.aggregatePredictions(predictions);
       
       const processingTime = performance.now() - startTime;
@@ -103,10 +96,10 @@ export class HuggingFaceDetector extends BaseDetector {
   /**
    * Capture multiple frames from video at regular intervals
    */
-  private async captureFrames(videoElement: HTMLVideoElement): Promise<ImageData[]> {
-    const frames: ImageData[] = [];
+  private async captureFrames(videoElement: HTMLVideoElement): Promise<string[]> {
+    const frames: string[] = [];
     const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     if (!ctx) {
       throw new Error('Failed to get canvas context');
@@ -121,8 +114,8 @@ export class HuggingFaceDetector extends BaseDetector {
 
     for (let i = 0; i < this.FRAME_COUNT; i++) {
       ctx.drawImage(videoElement, 0, 0, width, height);
-      const imageData = ctx.getImageData(0, 0, width, height);
-      frames.push(imageData);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      frames.push(dataUrl);
 
       // Wait before capturing next frame
       if (i < this.FRAME_COUNT - 1) {
@@ -134,71 +127,14 @@ export class HuggingFaceDetector extends BaseDetector {
   }
 
   /**
-   * Extract face crops from frames using simple face detection
-   * For MVP, we'll use the center crop as a fallback if no face detection is available
+   * Get predictions for all frames
    */
-  private async extractFaceCrops(
-    frames: ImageData[],
-    videoElement: HTMLVideoElement
-  ): Promise<Blob[]> {
-    const crops: Blob[] = [];
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-
-    if (!ctx) {
-      throw new Error('Failed to get canvas context');
-    }
-
-    canvas.width = this.FACE_CROP_SIZE;
-    canvas.height = this.FACE_CROP_SIZE;
-
-    for (let i = 0; i < frames.length; i++) {
-      // For MVP: Use center crop (assumes face is roughly centered)
-      // TODO: Integrate BlazeFace or MediaPipe for proper face detection
-      const frame = frames[i];
-      const srcSize = Math.min(frame.width, frame.height);
-      const srcX = (frame.width - srcSize) / 2;
-      const srcY = (frame.height - srcSize) / 2;
-
-      // Create temporary canvas for the frame
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = frame.width;
-      tempCanvas.height = frame.height;
-      const tempCtx = tempCanvas.getContext('2d');
-      
-      if (!tempCtx) continue;
-      
-      tempCtx.putImageData(frame, 0, 0);
-
-      // Draw cropped and resized face region
-      ctx.drawImage(
-        tempCanvas,
-        srcX, srcY, srcSize, srcSize,
-        0, 0, this.FACE_CROP_SIZE, this.FACE_CROP_SIZE
-      );
-
-      // Convert to blob
-      const blob = await new Promise<Blob | null>(resolve => {
-        canvas.toBlob(resolve, 'image/jpeg', 0.9);
-      });
-
-      if (blob) {
-        crops.push(blob);
-      }
-    }
-
-    return crops;
-  }
-
-  /**
-   * Upload face crops to HuggingFace API and get predictions
-   */
-  private async getPredictions(faceCrops: Blob[]): Promise<FramePrediction[]> {
+  private async getPredictions(frames: string[]): Promise<FramePrediction[]> {
     const predictions: FramePrediction[] = [];
 
-    for (let i = 0; i < faceCrops.length; i++) {
+    for (let i = 0; i < frames.length; i++) {
       try {
-        const prediction = await this.uploadAndPredict(faceCrops[i], i);
+        const prediction = await this.uploadAndPredict(frames[i], i);
         if (prediction) {
           predictions.push(prediction);
         }
@@ -208,7 +144,7 @@ export class HuggingFaceDetector extends BaseDetector {
       }
 
       // Small delay between API calls to avoid rate limiting
-      if (i < faceCrops.length - 1) {
+      if (i < frames.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
@@ -217,29 +153,33 @@ export class HuggingFaceDetector extends BaseDetector {
   }
 
   /**
-   * Upload a single image to HuggingFace Gradio API
+   * Upload a single frame to HuggingFace Gradio API
    */
   private async uploadAndPredict(
-    imageBlob: Blob,
+    base64Image: string,
     frameIndex: number
   ): Promise<FramePrediction | null> {
     const timestamp = Date.now();
 
-    // Convert blob to base64 data URL
-    const base64 = await this.blobToBase64(imageBlob);
-
-    // Step 1: POST to initiate prediction
+    // POST to initiate prediction
     const postResponse = await fetch(`${this.API_URL}${this.API_ENDPOINT}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        data: [base64],
+        data: [{
+          url: base64Image,
+          orig_name: `frame_${frameIndex}.jpg`,
+          mime_type: 'image/jpeg',
+          meta: { _type: 'gradio.FileData' }
+        }],
       }),
     });
 
     if (!postResponse.ok) {
+      const errorText = await postResponse.text();
+      console.error('API POST error:', postResponse.status, errorText);
       throw new Error(`API POST failed: ${postResponse.status}`);
     }
 
@@ -250,7 +190,7 @@ export class HuggingFaceDetector extends BaseDetector {
       throw new Error('No event_id returned from API');
     }
 
-    // Step 2: GET to retrieve result
+    // GET to retrieve result
     const getResponse = await fetch(
       `${this.API_URL}${this.API_ENDPOINT}/${eventId}`
     );
@@ -267,73 +207,18 @@ export class HuggingFaceDetector extends BaseDetector {
       throw new Error('Failed to parse API response');
     }
 
-    // Parse the prediction result
-    // Expected format: { label: "fake" | "real", confidence: 0.XX }
-    const score = result.label?.toLowerCase() === 'fake' 
-      ? result.confidence 
-      : 1 - result.confidence;
+    // Determine score based on label
+    const isFake = result.label.toUpperCase().includes('FAKE');
+    const score = isFake ? result.confidence : 1 - result.confidence;
+
+    console.log(`Frame ${frameIndex}: ${result.label} (${(result.confidence * 100).toFixed(1)}%)`);
 
     return {
       frameIndex,
       score,
-      label: result.label || 'unknown',
+      label: result.label,
       timestamp,
     };
-  }
-
-  /**
-   * Convert Blob to base64 data URL
-   */
-  private blobToBase64(blob: Blob): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-        } else {
-          reject(new Error('Failed to convert blob to base64'));
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  }
-
-  /**
-   * Parse Server-Sent Events response from Gradio API
-   */
-  private parseSSEResponse(responseText: string): HFApiResponse | null {
-    const lines = responseText.split('\n');
-    
-    for (const line of lines) {
-      if (line.startsWith('data:')) {
-        const dataStr = line.substring(5).trim();
-        try {
-          const data = JSON.parse(dataStr);
-          // Gradio returns array of outputs
-          if (Array.isArray(data) && data.length > 0) {
-            const output = data[0];
-            // Handle different response formats
-            if (typeof output === 'object' && output !== null) {
-              return {
-                label: output.label || output.prediction || 'unknown',
-                confidence: output.confidence || output.score || 0.5,
-              };
-            } else if (typeof output === 'string') {
-              // Simple string response like "fake" or "real"
-              return {
-                label: output,
-                confidence: 0.8, // Default confidence for simple responses
-              };
-            }
-          }
-        } catch (e) {
-          // Continue to next line
-        }
-      }
-    }
-
-    return null;
   }
 
   /**
@@ -359,23 +244,33 @@ export class HuggingFaceDetector extends BaseDetector {
     const scores = predictions.map(p => p.score);
     const averageScore = scores.reduce((a, b) => a + b, 0) / scores.length;
     const maxScore = Math.max(...scores);
+    
+    // Count frames where the model said FAKE (score > 0.5)
+    const fakeFrameCount = predictions.filter(p => p.score > 0.5).length;
+    const fakeFrameRatio = fakeFrameCount / predictions.length;
+
+    console.log(`📊 Aggregation: ${fakeFrameCount}/${predictions.length} frames flagged as FAKE (${(fakeFrameRatio * 100).toFixed(1)}%)`);
+    console.log(`📊 Average score: ${(averageScore * 100).toFixed(1)}%, Max score: ${(maxScore * 100).toFixed(1)}%`);
 
     let verdict: string;
     let isFake: boolean;
     let confidence: number;
 
-    if (averageScore >= this.FAKE_THRESHOLD) {
+    // Use the higher of: average score OR fake frame ratio
+    const effectiveScore = Math.max(averageScore, fakeFrameRatio);
+
+    if (effectiveScore >= this.FAKE_THRESHOLD) {
       verdict = 'Likely Manipulated';
       isFake = true;
-      confidence = averageScore;
-    } else if (averageScore >= this.SUSPICIOUS_THRESHOLD) {
+      confidence = effectiveScore;
+    } else if (effectiveScore >= this.SUSPICIOUS_THRESHOLD) {
       verdict = 'Suspicious / Uncertain';
-      isFake = false; // Not confident enough to flag as fake
-      confidence = averageScore;
+      isFake = true; // Flag as fake if suspicious (more strict)
+      confidence = effectiveScore;
     } else {
       verdict = 'Likely Authentic';
       isFake = false;
-      confidence = 1 - averageScore;
+      confidence = 1 - effectiveScore;
     }
 
     return {
@@ -385,5 +280,95 @@ export class HuggingFaceDetector extends BaseDetector {
       averageScore,
       maxScore,
     };
+  }
+
+  /**
+   * Convert Blob to base64 data URL
+   */
+  private blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error('Failed to convert blob to base64'));
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  /**
+   * Parse Server-Sent Events response from Gradio API
+   * PraneshJs/fakevideodetect returns text output
+   */
+  private parseSSEResponse(responseText: string): HFApiResponse | null {
+    const lines = responseText.split('\n');
+    
+    console.log('📥 Raw API response:', responseText);
+    
+    for (const line of lines) {
+      if (line.startsWith('data:')) {
+        const dataStr = line.substring(5).trim();
+        try {
+          const data = JSON.parse(dataStr);
+          console.log('📦 Parsed data:', data);
+          
+          if (Array.isArray(data) && data.length > 0) {
+            const output = data[0];
+            
+            if (typeof output === 'string') {
+              // Format 1: iemsayan format "FAKE (54.27%)" or "REAL (53.06%)"
+              const matchPercent = output.match(/(REAL|FAKE)\s*\((\d+\.?\d*)%?\)/i);
+              if (matchPercent) {
+                const label = matchPercent[1].toUpperCase();
+                const confidence = parseFloat(matchPercent[2]) / 100;
+                console.log(`✅ Parsed: ${label} with ${(confidence * 100).toFixed(1)}% confidence`);
+                return { label, confidence };
+              }
+              
+              // Format 2: "The image is REAL/FAKE. Confidence score is: XX.XX"
+              const matchConfScore = output.match(/is\s+(REAL|FAKE).*?(\d+\.?\d*)/i);
+              if (matchConfScore) {
+                const label = matchConfScore[1].toUpperCase();
+                const confidence = parseFloat(matchConfScore[2]) / 100;
+                console.log(`✅ Parsed: ${label} with ${(confidence * 100).toFixed(1)}% confidence`);
+                return { label, confidence };
+              }
+              
+              // Format 3: Simple FAKE/REAL detection
+              if (output.toUpperCase().includes('FAKE')) {
+                const confMatch = output.match(/(\d+\.?\d*)/);
+                const confidence = confMatch ? parseFloat(confMatch[1]) / 100 : 0.75;
+                console.log(`✅ Detected FAKE with ${(confidence * 100).toFixed(1)}% confidence`);
+                return { label: 'FAKE', confidence };
+              } else if (output.toUpperCase().includes('REAL')) {
+                const confMatch = output.match(/(\d+\.?\d*)/);
+                const confidence = confMatch ? parseFloat(confMatch[1]) / 100 : 0.75;
+                console.log(`✅ Detected REAL with ${(confidence * 100).toFixed(1)}% confidence`);
+                return { label: 'REAL', confidence };
+              }
+              
+              // Return raw output as label
+              return { label: output, confidence: 0.5 };
+            }
+            
+            // Handle object format
+            if (typeof output === 'object' && output !== null) {
+              return {
+                label: output.label || output.prediction || output.result || 'unknown',
+                confidence: output.confidence || output.score || output.probability || 0.5,
+              };
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to parse JSON:', e);
+        }
+      }
+    }
+
+    return null;
   }
 }

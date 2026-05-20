@@ -208,48 +208,94 @@ class DeepfakeDetectorContentScript {
   private updateButtonWithResult(button: HTMLButtonElement, result: ScanResult): void {
     // Get HuggingFace detector details if available
     const hfResult = result.detectorResults?.huggingface;
-    const verdict = hfResult?.details?.verdict || (result.isFake ? 'Potential Deepfake' : 'Appears Authentic');
     const framesAnalyzed = hfResult?.details?.framesAnalyzed || 0;
-    const confidence = (result.overallConfidence * 100).toFixed(0);
-
-    if (result.isFake) {
-      button.innerHTML = `
-        <span style="font-size: 14px;">⚠️</span>
-        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
-          <span style="font-weight: 600;">${verdict}</span>
-          <span style="font-size: 10px; opacity: 0.8;">Confidence: ${confidence}% | Frames: ${framesAnalyzed}</span>
-        </div>
-      `;
-      button.style.background = 'rgba(239, 68, 68, 0.9)';
-      button.style.borderColor = 'rgba(239, 68, 68, 0.5)';
-    } else if (hfResult?.details?.verdict === 'Suspicious / Uncertain') {
-      button.innerHTML = `
-        <span style="font-size: 14px;">⚠️</span>
-        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
-          <span style="font-weight: 600;">Uncertain</span>
-          <span style="font-size: 10px; opacity: 0.8;">Score: ${confidence}% | Frames: ${framesAnalyzed}</span>
-        </div>
-      `;
-      button.style.background = 'rgba(245, 158, 11, 0.9)';
-      button.style.borderColor = 'rgba(245, 158, 11, 0.5)';
-    } else {
-      button.innerHTML = `
-        <span style="font-size: 14px;">✓</span>
-        <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
-          <span style="font-weight: 600;">Likely Authentic</span>
-          <span style="font-size: 10px; opacity: 0.8;">Confidence: ${confidence}% | Frames: ${framesAnalyzed}</span>
-        </div>
-      `;
-      button.style.background = 'rgba(34, 197, 94, 0.9)';
-      button.style.borderColor = 'rgba(34, 197, 94, 0.5)';
-    }
+    const averageScore = hfResult?.details?.averageScore || 0;
+    const maxScore = hfResult?.details?.maxScore || 0;
+    const framePredictions = hfResult?.details?.framePredictions || [];
     
+    // Count frames flagged as FAKE (score > 0.5)
+    const fakeFrameCount = framePredictions.filter((p: any) => p.score > 0.5).length;
+    const fakeFrameRatio = framesAnalyzed > 0 ? fakeFrameCount / framesAnalyzed : 0;
+    
+    // Calculate fake score using weighted combination:
+    // - Average score (how confident the model is overall)
+    // - Max score (highest single frame detection)
+    // - Fake frame ratio (what % of frames were flagged)
+    const weightedScore = Math.max(
+      averageScore,
+      maxScore * 0.8,  // Weight max score slightly less
+      fakeFrameRatio
+    );
+    
+    const fakeScore = Math.round(weightedScore * 100);
+    const authenticScore = 100 - fakeScore;
+    
+    // Generate gradient color based on fake score
+    // 0% fake = pure green, 100% fake = pure red
+    const color = this.getGradientColor(fakeScore);
+    
+    // Determine verdict text based on score
+    let verdict: string;
+    let icon: string;
+    if (fakeScore >= 65) {
+      verdict = 'Likely Deepfake';
+      icon = '⚠️';
+    } else if (fakeScore >= 50) {
+      verdict = 'Possibly Manipulated';
+      icon = '⚠️';
+    } else if (fakeScore >= 35) {
+      verdict = 'Uncertain';
+      icon = '❓';
+    } else {
+      verdict = 'Likely Authentic';
+      icon = '✓';
+    }
+
+    button.innerHTML = `
+      <span style="font-size: 14px;">${icon}</span>
+      <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
+        <span style="font-weight: 600;">${verdict}</span>
+        <span style="font-size: 10px; opacity: 0.9;">
+          Fake: ${fakeScore}% | Real: ${authenticScore}% | Frames: ${framesAnalyzed}
+        </span>
+      </div>
+    `;
+    
+    button.style.background = color;
+    button.style.borderColor = color.replace('0.9', '0.5');
     button.style.pointerEvents = 'auto';
     
-    // Reset button after 10 seconds
+    // Reset button after 15 seconds (longer to read scores)
     setTimeout(() => {
       this.resetButton(button);
-    }, 10000);
+    }, 15000);
+  }
+
+  private getGradientColor(fakeScore: number): string {
+    // fakeScore: 0-100
+    // 0 = pure green (authentic), 100 = pure red (fake)
+    // Clamp to 0-100
+    const score = Math.max(0, Math.min(100, fakeScore));
+    
+    // Calculate RGB values for smooth gradient
+    // Green (34, 197, 94) -> Yellow (245, 158, 11) -> Red (239, 68, 68)
+    let r: number, g: number, b: number;
+    
+    if (score <= 50) {
+      // Green to Yellow (0-50)
+      const t = score / 50;
+      r = Math.round(34 + (245 - 34) * t);
+      g = Math.round(197 + (158 - 197) * t);
+      b = Math.round(94 + (11 - 94) * t);
+    } else {
+      // Yellow to Red (50-100)
+      const t = (score - 50) / 50;
+      r = Math.round(245 + (239 - 245) * t);
+      g = Math.round(158 + (68 - 158) * t);
+      b = Math.round(11 + (68 - 11) * t);
+    }
+    
+    return `rgba(${r}, ${g}, ${b}, 0.9)`;
   }
 
   private updateButtonWithError(button: HTMLButtonElement): void {

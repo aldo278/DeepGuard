@@ -2,7 +2,7 @@
 
 import { ScanResult, ScannerConfig, DetectorResult } from './types';
 import { BaseDetector } from './detectors/BaseDetector';
-import { LocalONNXDetector } from './detectors/LocalONNXDetector';
+import { HuggingFaceDetector } from './detectors/HuggingFaceDetector';
 import { BlinkDetector } from './detectors/BlinkDetector';
 import { LandmarkDetector } from './detectors/LandmarkDetector';
 import { PPGDetector } from './detectors/PPGDetector';
@@ -41,11 +41,11 @@ export class DeepfakeScanner {
   private initializeDetectors(): void {
     const { detectors } = this.config;
 
-    // Local ONNX detector - PRIMARY (runs in browser, no API calls)
+    // HuggingFace API detector - PRIMARY (iemsayan/deepfake-detector)
     if (detectors.huggingface.enabled) {
       this.detectors.set(
         'huggingface',
-        new LocalONNXDetector({
+        new HuggingFaceDetector({
           threshold: detectors.huggingface.threshold,
           timeout: detectors.huggingface.timeout,
         })

@@ -1,7 +1,6 @@
 // Fact Check Content Script
 // Provides floating button for text selection fact-checking
 
-
 interface FactCheckResult {
   verdict: 'true' | 'false' | 'partially-true' | 'unverifiable';
   confidence: number;

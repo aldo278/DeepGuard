@@ -2,6 +2,7 @@
 
 import { PageType, Platform, Claim, ClaimVerdict, ExtensionMessage } from '@/types';
 import TRUSTSHIELD_CONFIG from '@/lib/constants';
+import ENV from '@/lib/env';
 
 // Chrome extension types
 declare const chrome: any;
@@ -389,74 +390,52 @@ export class MisinfoShield {
           this.claimsBuffer.push(claim);
           await this.factCheckClaim(claim);
         }
+      } else {
+        // No results, still escalate to LLM for analysis
+        this.claimsBuffer.push(claim);
+        await this.escalateClaimToLLM(claim);
       }
       
     } catch (error) {
       console.error('Failed to check claim worthiness:', error);
-      this.sendError('CLAIM_WORTHINESS_ERROR', 'Claim worthiness check failed', error);
+      // On error, still escalate to LLM as fallback
+      this.claimsBuffer.push(claim);
+      await this.escalateClaimToLLM(claim);
+      this.sendError('CLAIM_WORTHINESS_ERROR', 'Claim worthiness check failed, escalating to LLM', error);
     }
   }
 
   // Fact check claim using Google Fact Check Tools
   private async factCheckClaim(claim: Claim): Promise<void> {
-    try {
-      // Call Google Fact Check Tools API
-      const response = await fetch(`${TRUSTSHIELD_CONFIG.API.GOOGLE_FACT_CHECK}?query=${encodeURIComponent(claim.text)}&languageCode=en`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
+    let factCheckResult: any = null;
+    
+    // Try Google Fact Check if API key is available
+    if (ENV.GOOGLE_FACT_CHECK_API_KEY) {
+      try {
+        const response = await fetch(`${TRUSTSHIELD_CONFIG.API.GOOGLE_FACT_CHECK}?query=${encodeURIComponent(claim.text)}&languageCode=en&key=${ENV.GOOGLE_FACT_CHECK_API_KEY}`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
 
-      if (!response.ok) {
-        throw new Error(`Google Fact Check API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      // Process fact check results
-      let verdict: ClaimVerdict;
-      
-      if (data.claims && data.claims.length > 0) {
-        const factCheckResult = data.claims[0];
-        
-        if (factCheckResult.claimReview && factCheckResult.claimReview.length > 0) {
-          const review = factCheckResult.claimReview[0];
+        if (response.ok) {
+          const data = await response.json();
           
-          verdict = {
-            claimId: claim.claimId,
-            claimText: claim.text,
-            factCheckMatch: {
-              url: review.url,
-              publisher: review.publisher.name,
-              verdict: review.textualRating,
-              rating: review.textualRating,
-              confidence: 0.9, // High confidence for direct matches
-            },
-            llmVerdict: this.mapFactCheckToVerdict(review.textualRating),
-            llmReasoning: `Fact-check result from ${review.publisher.name}: ${review.textualRating}`,
-            confidence: 0.9,
-            timestamp: Date.now(),
-            processingLatency: Date.now() - claim.timestamp,
-          };
-        } else {
-          // No review found, escalate to LLM
-          await this.escalateClaimToLLM(claim);
-          return;
+          if (data.claims && data.claims.length > 0) {
+            factCheckResult = data.claims[0];
+          }
         }
-      } else {
-        // No fact check found, escalate to LLM
-        await this.escalateClaimToLLM(claim);
-        return;
+      } catch (error) {
+        console.error('Google Fact Check API error:', error);
       }
-      
-      // Send verdict to background script
-      this.sendClaimVerdict(verdict);
-      
-    } catch (error) {
-      console.error('Failed to fact check claim:', error);
-      this.sendError('FACT_CHECK_ERROR', 'Fact check failed', error);
+    } else {
+      console.warn('Google Fact Check API key not configured');
     }
+
+    // Always escalate to LLM for additional analysis
+    // This provides comprehensive analysis using both sources
+    await this.escalateClaimToLLM(claim, factCheckResult);
   }
 
   // Map fact check rating to verdict
@@ -475,7 +454,7 @@ export class MisinfoShield {
   }
 
   // Escalate claim to LLM for analysis
-  private async escalateClaimToLLM(claim: Claim): Promise<void> {
+  private async escalateClaimToLLM(claim: Claim, factCheckResult?: any): Promise<void> {
     try {
       chrome.runtime.sendMessage({
         type: 'CLAIM_LLM_REQUEST',
@@ -483,6 +462,7 @@ export class MisinfoShield {
           claimText: claim.text,
           claimId: claim.claimId,
           context: claim.context ? { text: claim.context } : {},
+          factCheckResult: factCheckResult || null, // Include Google Fact Check result if available
         }
       });
       

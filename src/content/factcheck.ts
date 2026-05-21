@@ -533,7 +533,43 @@ class FactChecker {
         
         console.log('Available free models:', freeModels.map((m: any) => m.id));
         
-        // Try each free model
+        // Preferred models (more reliable)
+        const preferredModels = [
+          'openai/gpt-4o-mini',
+          'meta-llama/llama-3.3-70b-instruct:free',
+          'openrouter/free',
+          'google/gemma-4-26b-a4b-it:free',
+          'deepseek/deepseek-v4-flash:free'
+        ];
+        
+        // Try preferred models first (even if not in free list, for paid models)
+        for (const preferredModel of preferredModels) {
+          try {
+            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+                'HTTP-Referer': window.location.origin,
+                'X-Title': 'TrustShield Fact Check'
+              },
+              body: JSON.stringify({
+                model: preferredModel,
+                messages: [{ role: 'user', content: 'test' }],
+                max_tokens: 1
+              })
+            });
+
+            if (response.ok) {
+              console.log(`Fact check using preferred model: ${preferredModel}`);
+              return preferredModel;
+            }
+          } catch (e) {
+            console.log(`Preferred model ${preferredModel} failed, trying next...`);
+          }
+        }
+        
+        // Try each free model as fallback
         for (const model of freeModels) {
           try {
             const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -662,18 +698,54 @@ Respond in this exact JSON format only, no other text:
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
     
+    console.log('🔍 LLM Response:', content);
+    
     // Parse JSON from response
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error('Invalid response format');
+      console.error('❌ No JSON found in response, falling back to text parsing');
+      // Fallback: try to parse verdict from text
+      const lowerContent = content.toLowerCase();
+      let verdict: 'true' | 'false' | 'partially-true' | 'unverifiable' = 'unverifiable';
+      if (lowerContent.includes('true') || lowerContent.includes('accurate') || lowerContent.includes('correct')) {
+        verdict = 'true';
+      } else if (lowerContent.includes('false') || lowerContent.includes('inaccurate') || lowerContent.includes('incorrect')) {
+        verdict = 'false';
+      } else if (lowerContent.includes('partially') || lowerContent.includes('mixed')) {
+        verdict = 'partially-true';
+      }
+      return {
+        verdict,
+        confidence: 0.5,
+        summary: content.substring(0, 200)
+      };
     }
 
-    const result = JSON.parse(jsonMatch[0]);
-    return {
-      verdict: result.verdict || 'unverifiable',
-      confidence: result.confidence || 0.5,
-      summary: result.summary || 'Unable to determine'
-    };
+    try {
+      const result = JSON.parse(jsonMatch[0]);
+      return {
+        verdict: result.verdict || 'unverifiable',
+        confidence: result.confidence || 0.5,
+        summary: result.summary || 'Unable to determine'
+      };
+    } catch (error) {
+      console.error('❌ JSON parse error, falling back to text parsing:', error);
+      // Fallback: try to parse verdict from text
+      const lowerContent = content.toLowerCase();
+      let verdict: 'true' | 'false' | 'partially-true' | 'unverifiable' = 'unverifiable';
+      if (lowerContent.includes('true') || lowerContent.includes('accurate') || lowerContent.includes('correct')) {
+        verdict = 'true';
+      } else if (lowerContent.includes('false') || lowerContent.includes('inaccurate') || lowerContent.includes('incorrect')) {
+        verdict = 'false';
+      } else if (lowerContent.includes('partially') || lowerContent.includes('mixed')) {
+        verdict = 'partially-true';
+      }
+      return {
+        verdict,
+        confidence: 0.5,
+        summary: content.substring(0, 200)
+      };
+    }
   }
 
   private showResultsPopup(x: number, y: number, isLoading: boolean, result?: FactCheckResult, error?: string): void {

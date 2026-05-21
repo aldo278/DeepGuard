@@ -128,6 +128,7 @@ class TrustShieldServiceWorker {
     this.messageHandlers.set('SETTINGS_UPDATE', this.handleSettingsUpdate.bind(this));
     this.messageHandlers.set('PRIVACY_CONSENT_RESPONSE', this.handlePrivacyConsentResponse.bind(this));
     this.messageHandlers.set('GET_API_KEY', this.handleGetApiKey.bind(this));
+    this.messageHandlers.set('CLAIM_LLM_REQUEST', this.handleClaimLLMRequest.bind(this));
     
     // Reality Defender API proxy handlers (bypass CORS)
     this.messageHandlers.set('RD_GET_PRESIGNED_URL', this.handleRDGetPresignedUrl.bind(this));
@@ -510,6 +511,108 @@ class TrustShieldServiceWorker {
       sendResponse({ success: true, data });
     } catch (error) {
       sendResponse({ error: `Get results failed: ${error}` });
+    }
+  }
+
+  private async handleClaimLLMRequest(payload: any, sender: any, sendResponse: Function): Promise<void> {
+    const maxRetries = 3;
+    let lastError: any = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const apiKey = (import.meta as any).env?.VITE_OPENROUTER_API_KEY || '';
+        const { claimText, claimId, context, factCheckResult } = payload;
+
+        if (!apiKey) {
+          sendResponse({ error: 'OpenRouter API key not configured' });
+          return;
+        }
+
+        // Build prompt with Google Fact Check context if available
+        let systemPrompt = 'You are a fact-checking assistant. Analyze claims for accuracy and provide verdicts.';
+        let userPrompt = `Claim: "${claimText}"`;
+
+        if (factCheckResult && factCheckResult.claimReview && factCheckResult.claimReview.length > 0) {
+          const review = factCheckResult.claimReview[0];
+          userPrompt += `\n\nGoogle Fact Check Result:\n- Publisher: ${review.publisher.name}\n- Rating: ${review.textualRating}\n- URL: ${review.url}\n\nConsider this fact check result in your analysis, but provide your own independent assessment.`;
+        } else {
+          userPrompt += '\n\nNo external fact check results available. Provide your analysis based on the claim text.';
+        }
+
+        const response = await fetch(TRUSTSHIELD_CONFIG.API.OPENROUTER, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: TRUSTSHIELD_CONFIG.MODELS.LLM.MODEL_NAME,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            max_tokens: TRUSTSHIELD_CONFIG.MODELS.LLM.MAX_TOKENS.TEXT,
+            temperature: TRUSTSHIELD_CONFIG.MODELS.LLM.TEMPERATURE,
+          }),
+        });
+
+        // Retry on 502 Bad Gateway or 5xx errors
+        if (!response.ok && (response.status === 502 || response.status >= 500)) {
+          console.warn(`OpenRouter API error ${response.status}, retrying (${attempt + 1}/${maxRetries})...`);
+          lastError = `OpenRouter API error: ${response.status}`;
+          if (attempt < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))); // Exponential backoff
+            continue;
+          }
+        }
+
+        if (!response.ok) {
+          sendResponse({ error: `OpenRouter API error: ${response.status}` });
+          return;
+        }
+
+        const data = await response.json();
+        const llmResponse = data.choices[0]?.message?.content || '';
+
+        // Parse LLM response for verdict
+        const verdict = this.parseLLMVerdict(llmResponse);
+
+        sendResponse({
+          success: true,
+          claimId,
+          llmResponse,
+          verdict,
+          factCheckResult: factCheckResult || null,
+        });
+
+        return; // Success, exit retry loop
+
+      } catch (error) {
+        console.error(`LLM request attempt ${attempt + 1} failed:`, error);
+        lastError = error;
+        if (attempt < maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1))); // Exponential backoff
+          continue;
+        }
+      }
+    }
+
+    // All retries failed
+    console.error('LLM request failed after retries:', lastError);
+    sendResponse({ error: `LLM request failed after ${maxRetries} retries: ${lastError}` });
+  }
+
+  private parseLLMVerdict(response: string): 'true' | 'false' | 'disputed' | 'unverifiable' {
+    const lowerResponse = response.toLowerCase();
+    
+    if (lowerResponse.includes('true') || lowerResponse.includes('accurate') || lowerResponse.includes('correct') || lowerResponse.includes('verified')) {
+      return 'true';
+    } else if (lowerResponse.includes('false') || lowerResponse.includes('inaccurate') || lowerResponse.includes('incorrect') || lowerResponse.includes('misleading')) {
+      return 'false';
+    } else if (lowerResponse.includes('disputed') || lowerResponse.includes('debate') || lowerResponse.includes('controversial') || lowerResponse.includes('uncertain')) {
+      return 'disputed';
+    } else {
+      return 'unverifiable';
     }
   }
 

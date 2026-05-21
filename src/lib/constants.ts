@@ -40,7 +40,7 @@ export const TRUSTSHIELD_CONFIG = {
     },
     
     LLM: {
-      MODEL_NAME: 'google/gemini-3-flash-preview',
+      MODEL_NAME: 'openai/gpt-4o-mini',
       MAX_TOKENS: {
         VISION: 150,
         TEXT: 200,

@@ -200,9 +200,10 @@ class DeepfakeDetectorContentScript {
     } catch (error) {
       console.error('❌ DeepGuard: Scan failed', error);
       this.updateButtonWithError(button);
+    } finally {
+      // Always reset isScanning flag, even if there's an error
+      this.isScanning = false;
     }
-    
-    this.isScanning = false;
   }
 
   private updateButtonWithResult(button: HTMLButtonElement, result: ScanResult): void {
@@ -323,9 +324,10 @@ class DeepfakeDetectorContentScript {
     } catch (error) {
       console.error('❌ DeepGuard: Scan failed', error);
       this.updateOverlay('Error', 'Scan failed', 'error');
+    } finally {
+      // Always reset isScanning flag, even if there's an error
+      this.isScanning = false;
     }
-
-    this.isScanning = false;
   }
 
   private stopScanning(): void {
@@ -374,7 +376,11 @@ class DeepfakeDetectorContentScript {
   }
 
   private createOverlay(): void {
-    if (this.overlayElement) return;
+    // Remove existing overlay if present
+    if (this.overlayElement) {
+      this.overlayElement.remove();
+      this.overlayElement = null;
+    }
 
     this.overlayElement = document.createElement('div');
     this.overlayElement.id = 'deepguard-overlay';
@@ -384,28 +390,25 @@ class DeepfakeDetectorContentScript {
       right: 20px;
       padding: 16px 24px;
       background: rgba(0, 0, 0, 0.85);
-      color: white;
       border-radius: 12px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      font-size: 14px;
-      z-index: 999999;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.1);
       backdrop-filter: blur(10px);
+      z-index: 2147483647;
       display: flex;
       align-items: center;
       gap: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      color: white;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      transition: all 0.3s ease;
     `;
 
     this.overlayElement.innerHTML = `
-      <div class="deepguard-spinner" style="
-        width: 20px;
-        height: 20px;
-        border: 2px solid rgba(255,255,255,0.3);
-        border-top-color: #3b82f6;
-        border-radius: 50%;
-        animation: deepguard-spin 1s linear infinite;
-      "></div>
-      <span>Analyzing video...</span>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="animation: deepguard-spin 1s linear infinite;">
+        <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>
+      </svg>
+      <span style="font-weight: 600;">Scanning...</span>
     `;
 
     const style = document.createElement('style');
@@ -455,6 +458,12 @@ class DeepfakeDetectorContentScript {
 
   private displayResult(result: ScanResult): void {
     console.log('🎨 DisplayResult called with:', { isFake: result.isFake, overallConfidence: result.overallConfidence });
+    
+    // Ensure overlay exists (it might have been removed by page DOM manipulation)
+    if (!this.overlayElement) {
+      console.log('🎨 Overlay was removed, recreating it');
+      this.createOverlay();
+    }
     
     if (result.isFake) {
       console.log('🎨 Showing FAKE overlay');
